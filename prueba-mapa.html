@@ -97,9 +97,24 @@
 
 let geojson = event.data.geojson;
 
+console.log("GeoJSON recibido:", geojson);
+
+// Caso especial de Creatio
+if (
+    geojson &&
+    typeof geojson === "object" &&
+    geojson.__zone_symbol__value
+) {
+    geojson = geojson.__zone_symbol__value;
+}
+
+// Convertir JSON string a objeto
 if (typeof geojson === "string") {
     geojson = JSON.parse(geojson);
 }
+
+console.log("GeoJSON procesado:", geojson);
+
 console.log(
     "GeoJSON recibido:",
     event.data.geojson
