@@ -2,7 +2,8 @@
 <html lang="es">
 <head>
     <meta charset="UTF-8">
-    <title>Leaflet + Geoman</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Geofence Map</title>
 
     <link rel="stylesheet"
           href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
@@ -32,9 +33,13 @@
 
 <script>
 
-    const map = L.map('map').setView([8.9824, -79.5199], 12);
+    // Inicializar mapa
+    const map = L.map('map').setView(
+        [8.9824, -79.5199],
+        12
+    );
 
-    // Tu proveedor que ya funciona
+    // OpenStreetMap HOT
     L.tileLayer(
         'https://{s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png',
         {
@@ -43,31 +48,52 @@
         }
     ).addTo(map);
 
-    // Toolbar Geoman
+    // Controles Geoman
     map.pm.addControls({
         position: 'topleft',
+
         drawPolygon: true,
         drawRectangle: true,
+
         drawMarker: false,
         drawCircle: false,
         drawCircleMarker: false,
         drawPolyline: false,
+
         editMode: true,
         dragMode: true,
         removalMode: true
     });
+
+    // Función para enviar GeoJSON a Creatio
+    function enviarGeoJson(layer) {
+
+        const geojson =
+            JSON.stringify(
+                layer.toGeoJSON()
+            );
+
+        console.log("GeoJSON:");
+        console.log(geojson);
+
+        window.parent.postMessage({
+            type: "polygon_created",
+            geojson: geojson
+        }, "*");
+    }
 
     // Cuando se crea un polígono
     map.on('pm:create', function(e) {
 
         const layer = e.layer;
 
-        const geojson = layer.toGeoJSON();
+        enviarGeoJson(layer);
 
-        console.log('Polígono creado');
-        console.log(JSON.stringify(geojson, null, 2));
+        // Cuando se modifica
+        layer.on('pm:edit', function() {
+            enviarGeoJson(layer);
+        });
 
-        alert('Polígono creado');
     });
 
 </script>
