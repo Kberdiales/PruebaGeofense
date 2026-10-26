@@ -38,6 +38,8 @@
         [8.9824, -79.5199],
         12
     );
+	
+	let currentLayer = null;
 
     // OpenStreetMap HOT
     L.tileLayer(
@@ -81,20 +83,90 @@
             geojson: geojson
         }, "*");
     }
+	
+	window.addEventListener(
+    "message",
+    function(event) {
+
+        if (
+            event.data &&
+            event.data.type === "load_polygon"
+        ) {
+
+            try {
+
+                const geojson =
+                    JSON.parse(
+                        event.data.geojson
+                    );
+
+                // Eliminar polígono actual
+                if (currentLayer) {
+                    map.removeLayer(currentLayer);
+                }
+
+                // Dibujar polígono
+currentLayer =
+    L.geoJSON(geojson)
+     .addTo(map);
+
+currentLayer.eachLayer(function(layer) {
+
+    layer.pm.enable();
+
+    layer.on('pm:edit', function() {
+        enviarGeoJson(layer);
+    });
+
+});
+
+                // Ajustar zoom
+                map.fitBounds(
+                    currentLayer.getBounds()
+                );
+
+                console.log(
+                    "Polígono cargado"
+                );
+
+            } catch(ex) {
+
+                console.error(
+                    "Error cargando polígono",
+                    ex
+                );
+
+            }
+        }
+    }
+);
 
     // Cuando se crea un polígono
     map.on('pm:create', function(e) {
 
-        const layer = e.layer;
+const layer = e.layer;
 
-        enviarGeoJson(layer);
+// Eliminar polígono anterior
+if (currentLayer) {
+    map.removeLayer(currentLayer);
+}
 
-        // Cuando se modifica
-        layer.on('pm:edit', function() {
-            enviarGeoJson(layer);
-        });
+currentLayer = layer;
 
-    });
+layer.pm.enable();
+
+// Guardar GeoJSON
+enviarGeoJson(layer);
+
+layer.on('pm:edit', function() {
+    enviarGeoJson(layer);
+});
+
+
+
+window.parent.postMessage({
+    type: "get_polygon"
+}, "*");
 
 </script>
 
