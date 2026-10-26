@@ -95,11 +95,20 @@
 
             try {
 
-                const geojson =
-                    JSON.parse(
-                        event.data.geojson
-                    );
+let geojson = event.data.geojson;
 
+if (typeof geojson === "string") {
+    geojson = JSON.parse(geojson);
+}
+console.log(
+    "GeoJSON recibido:",
+    event.data.geojson
+);
+
+console.log(
+    "Tipo:",
+    typeof event.data.geojson
+);
                 // Eliminar polígono actual
                 if (currentLayer) {
                     map.removeLayer(currentLayer);
