@@ -133,6 +133,14 @@ console.log(
 currentLayer =
     L.geoJSON(geojson)
      .addTo(map);
+	 
+const bounds = currentLayer.getBounds();
+
+console.log("Bounds:", bounds);
+
+if (bounds.isValid()) {
+    map.fitBounds(bounds);
+}
 
 currentLayer.eachLayer(function(layer) {
 
@@ -145,9 +153,9 @@ currentLayer.eachLayer(function(layer) {
 });
 
                 // Ajustar zoom
-                map.fitBounds(
-                    currentLayer.getBounds()
-                );
+                //map.fitBounds(
+               //     currentLayer.getBounds()
+               // );
 
                 console.log(
                     "Polígono cargado"
