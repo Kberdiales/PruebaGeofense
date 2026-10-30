@@ -4,187 +4,133 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Geofence Map - Panamá</title>
- 
-    <link rel="stylesheet"
-          href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
- 
-    <link rel="stylesheet"
-          href="https://unpkg.com/@geoman-io/leaflet-geoman-free/dist/leaflet-geoman.css"/>
- 
-    <style>
-	html,
-	body {
-		margin: 0;
-		padding: 0;
-		width: 100%;
-		height: 100%;
-	}
 
-	#map {
-		width: 100%;
-		height: 100%;
-	}
+    <link rel="stylesheet"
+          href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+    <link rel="stylesheet"
+          href="https://unpkg.com/@geoman-io/leaflet-geoman-free/dist/leaflet-geoman.css">
+
+    <style>
+        html,
+        body {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+        }
+
+        #map {
+            width: 100%;
+            height: 100%;
+        }
     </style>
 </head>
 <body>
- 
-<div id="map"></div>
- 
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
- 
-<script src="https://unpkg.com/@geoman-io/leaflet-geoman-free/dist/leaflet-geoman.min.js"></script>
- 
-<script>
- 
-    // Mostrar el territorio de Panamá completo al iniciar.
-	const PANAMA = [8.9824, -79.5199];
+    <div id="map"></div>
 
-	const map = L.map('map').setView(
-		PANAMA,
-		8
-	);
-	
-	console.log(
-		"Centro inicial:",
-		map.getCenter()
-	);
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://unpkg.com/@geoman-io/leaflet-geoman-free/dist/leaflet-geoman.min.js"></script>
 
-	let currentLayer = null;
- 
-    // OpenStreetMap HOT
-    L.tileLayer(
-        'https://{s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png',
-        {
-            attribution: '&copy; OpenStreetMap contributors',
-            maxZoom: 20
-        }
-    ).addTo(map);
-	
-	window.addEventListener("load", () => {
+    <script>
+        // Mostrar Panamá al iniciar.
+        const PANAMA = [8.9824, -79.5199];
+        const map = L.map('map').setView(PANAMA, 8);
+        let currentLayer = null;
 
-		setTimeout(() => {
+        console.log("Centro inicial:", map.getCenter());
 
-			map.invalidateSize();
-			
-        map.setView(
-            PANAMA,
-            8
-        );			
-
-        console.log("Mapa reajustado");
-        console.log("Tamaño:", map.getSize());
-
-    }, 1500);
-
-	});	
- 
-    // Controles Geoman
-    map.pm.addControls({
-        position: 'topleft',
- 
-        drawPolygon: true,
-        drawRectangle: true,
- 
-        drawMarker: false,
-        drawCircle: true,
-        drawCircleMarker: false,
-        drawPolyline: false,
- 
-        editMode: true,
-        dragMode: true,
-        removalMode: true
-    });
- 
-    // Enviar la geometría a Creatio. Los círculos se representan como Point + radiusMeters.
-    function enviarGeoJson(layer) {
-        const esCirculo = layer instanceof L.Circle;
-        const feature = esCirculo
-            ? {
-                type: "Feature",
-                geometry: {
-                    type: "Point",
-                    coordinates: [layer.getLatLng().lng, layer.getLatLng().lat]
-                },
-                properties: {
-                    zoneType: "CIRCLE",
-                    radiusMeters: layer.getRadius()
-                }
+        // Capa base de OpenStreetMap HOT.
+        L.tileLayer(
+            'https://{s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png',
+            {
+                attribution: '&copy; OpenStreetMap contributors',
+                maxZoom: 20
             }
-            : layer.toGeoJSON();
+        ).addTo(map);
 
-        const geojson = JSON.stringify(feature);
+        // Corrige el tamaño del mapa cuando la página ya está visible.
+        window.addEventListener("load", () => {
+            setTimeout(() => {
+                map.invalidateSize();
+                map.setView(PANAMA, 8);
+                console.log("Mapa reajustado", map.getSize());
+            }, 1500);
+        });
 
-        console.log("GeoJSON:");
-        console.log(geojson);
+        // Herramientas para dibujar y editar geometrías.
+        map.pm.addControls({
+            position: 'topleft',
+            drawPolygon: true,
+            drawRectangle: true,
+            drawMarker: false,
+            drawCircle: true,
+            drawCircleMarker: false,
+            drawPolyline: false,
+            editMode: true,
+            dragMode: true,
+            removalMode: true
+        });
 
-        window.parent.postMessage({
-            type: esCirculo ? "circle_created" : "polygon_created",
-            geojson: geojson
-        }, "*");
-    }
-	
-	window.addEventListener(
-    "message",
-    function(event) {
- 
-        if (
-            !event.data ||
-            event.data.type !== "load_polygon"
-        ) {
-            return;
+        // Envía GeoJSON a Creatio. Los círculos se representan como Point + radiusMeters.
+        function enviarGeoJson(layer) {
+            const esCirculo = layer instanceof L.Circle;
+            const feature = esCirculo
+                ? {
+                    type: "Feature",
+                    geometry: {
+                        type: "Point",
+                        coordinates: [
+                            layer.getLatLng().lng,
+                            layer.getLatLng().lat
+                        ]
+                    },
+                    properties: {
+                        zoneType: "CIRCLE",
+                        radiusMeters: layer.getRadius()
+                    }
+                }
+                : layer.toGeoJSON();
+
+            const geojson = JSON.stringify(feature);
+            console.log("GeoJSON:", geojson);
+
+            window.parent.postMessage({
+                type: esCirculo ? "circle_created" : "polygon_created",
+                geojson: geojson
+            }, "*");
         }
 
-        if (
-            !event.data.geojson ||
-            event.data.geojson === ""
-        ) {
+        window.addEventListener("message", function(event) {
+            if (!event.data || event.data.type !== "load_polygon") {
+                return;
+            }
 
-		console.log(
-			"Registro nuevo. No existe geocerca."
-		);
+            if (!event.data.geojson || event.data.geojson === "") {
+                console.log("Registro nuevo. No existe geocerca.");
+                map.invalidateSize();
+                map.setView(PANAMA, 8);
+                return;
+            }
 
-		map.invalidateSize();
-
-		map.setView(
-			[8.9824, -79.5199],
-			8
-		);
-
-		return;
-	}		
- 
             try {
- 
-let geojson = event.data.geojson;
- 
-console.log("GeoJSON recibido:", geojson);
- 
-// Caso especial de Creatio
-if (
-    geojson &&
-    typeof geojson === "object" &&
-    geojson.__zone_symbol__value
-) {
-    geojson = geojson.__zone_symbol__value;
-}
- 
-// Convertir JSON string a objeto
-if (typeof geojson === "string") {
-    geojson = JSON.parse(geojson);
-}
- 
-console.log("GeoJSON procesado:", geojson);
- 
-console.log(
-    "GeoJSON recibido:",
-    event.data.geojson
-);
- 
-console.log(
-    "Tipo:",
-    typeof event.data.geojson
-);
-                // Eliminar geometría actual
+                let geojson = event.data.geojson;
+                console.log("GeoJSON recibido:", geojson);
+
+                // Compatibilidad con el wrapper que puede entregar Creatio.
+                if (
+                    geojson &&
+                    typeof geojson === "object" &&
+                    geojson.__zone_symbol__value
+                ) {
+                    geojson = geojson.__zone_symbol__value;
+                }
+
+                // Convierte una cadena JSON a objeto.
+                if (typeof geojson === "string") {
+                    geojson = JSON.parse(geojson);
+                }
+
+                // Elimina la geometría actual antes de cargar otra.
                 if (currentLayer) {
                     map.removeLayer(currentLayer);
                 }
@@ -210,74 +156,55 @@ console.log(
                 } else {
                     currentLayer = L.geoJSON(geojson).addTo(map);
                 }
-	 
-const bounds = currentLayer.getBounds();
- 
-console.log("Bounds:", bounds);
- 
-if (bounds.isValid()) {
-    map.fitBounds(bounds);
-}
- 
-currentLayer.eachLayer(function(layer) {
- 
-    layer.pm.enable();
- 
-    layer.on('pm:edit', function() {
-        enviarGeoJson(layer);
-    });
- 
-});
- 
-                console.log(
-                    "Geometría cargada"
-                );
- 
-            } catch(ex) {
- 
-                console.error(
-                    "Error cargando geometría",
-                    ex
-                );
- 
+
+                const bounds = currentLayer.getBounds();
+                console.log("Bounds:", bounds);
+
+                if (bounds.isValid()) {
+                    map.fitBounds(bounds);
+                }
+
+                currentLayer.eachLayer(function(layer) {
+                    if (layer.pm) {
+                        layer.pm.enable();
+                    }
+
+                    layer.on('pm:edit', function() {
+                        enviarGeoJson(layer);
+                    });
+                });
+
+                console.log("Geometría cargada");
+            } catch (ex) {
+                console.error("Error cargando geometría", ex);
             }
-        }
-    }
-);
- 
-    // Cuando se crea un polígono o círculo
-    map.on('pm:create', function(e) {
- 
-const layer = e.layer;
- 
-// Eliminar geometría anterior
-if (currentLayer) {
-    map.removeLayer(currentLayer);
-}
- 
-currentLayer = layer;
- 
-layer.pm.enable();
- 
-// Guardar GeoJSON
-enviarGeoJson(layer);
- 
-layer.on('pm:edit', function() {
-    enviarGeoJson(layer);
-});
- 
-});
- 
+        });
 
-setTimeout(() => {
+        // Reemplaza la geometría existente al dibujar una nueva.
+        map.on('pm:create', function(e) {
+            const layer = e.layer;
 
-    window.parent.postMessage({
-        type: "get_polygon"
-    }, "*");
+            if (currentLayer) {
+                map.removeLayer(currentLayer);
+            }
 
-}, 2000);
- 
-</script>
- 
+            currentLayer = layer;
+
+            if (layer.pm) {
+                layer.pm.enable();
+            }
+
+            enviarGeoJson(layer);
+
+            layer.on('pm:edit', function() {
+                enviarGeoJson(layer);
+            });
+        });
+
+        // Solicita la geometría existente al contenedor Creatio.
+        setTimeout(() => {
+            window.parent.postMessage({ type: "get_polygon" }, "*");
+        }, 2000);
+    </script>
 </body>
 </html>
