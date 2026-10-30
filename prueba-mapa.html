@@ -3,20 +3,20 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Geofence Map</title>
-
+    <title>Geofence Map - Panamá</title>
+ 
     <link rel="stylesheet"
           href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
-
+ 
     <link rel="stylesheet"
           href="https://unpkg.com/@geoman-io/leaflet-geoman-free/dist/leaflet-geoman.css"/>
-
+ 
     <style>
         html, body {
             margin: 0;
             height: 100%;
         }
-
+ 
         #map {
             width: 100%;
             height: 100vh;
@@ -24,23 +24,23 @@
     </style>
 </head>
 <body>
-
+ 
 <div id="map"></div>
-
+ 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-
+ 
 <script src="https://unpkg.com/@geoman-io/leaflet-geoman-free/dist/leaflet-geoman.min.js"></script>
-
+ 
 <script>
+ 
+    // Mostrar el territorio de Panamá completo al iniciar.
+    const map = L.map('map').fitBounds([
+        [7.15, -83.05],
+        [9.65, -77.15]
+    ]);
 
-    // Inicializar mapa
-    const map = L.map('map').setView(
-        [8.9824, -79.5199],
-        12
-    );
-	
 	let currentLayer = null;
-
+ 
     // OpenStreetMap HOT
     L.tileLayer(
         'https://{s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png',
@@ -49,37 +49,48 @@
             maxZoom: 20
         }
     ).addTo(map);
-
+ 
     // Controles Geoman
     map.pm.addControls({
         position: 'topleft',
-
+ 
         drawPolygon: true,
         drawRectangle: true,
-
+ 
         drawMarker: false,
-        drawCircle: false,
+        drawCircle: true,
         drawCircleMarker: false,
         drawPolyline: false,
-
+ 
         editMode: true,
         dragMode: true,
         removalMode: true
     });
-
-    // Función para enviar GeoJSON a Creatio
+ 
+    // Enviar la geometría a Creatio. Los círculos se representan como Point + radiusMeters.
     function enviarGeoJson(layer) {
+        const esCirculo = layer instanceof L.Circle;
+        const feature = esCirculo
+            ? {
+                type: "Feature",
+                geometry: {
+                    type: "Point",
+                    coordinates: [layer.getLatLng().lng, layer.getLatLng().lat]
+                },
+                properties: {
+                    zoneType: "CIRCLE",
+                    radiusMeters: layer.getRadius()
+                }
+            }
+            : layer.toGeoJSON();
 
-        const geojson =
-            JSON.stringify(
-                layer.toGeoJSON()
-            );
+        const geojson = JSON.stringify(feature);
 
         console.log("GeoJSON:");
         console.log(geojson);
 
         window.parent.postMessage({
-            type: "polygon_created",
+            type: esCirculo ? "circle_created" : "polygon_created",
             geojson: geojson
         }, "*");
     }
@@ -87,18 +98,18 @@
 	window.addEventListener(
     "message",
     function(event) {
-
+ 
         if (
             event.data &&
             event.data.type === "load_polygon"
         ) {
-
+ 
             try {
-
+ 
 let geojson = event.data.geojson;
-
+ 
 console.log("GeoJSON recibido:", geojson);
-
+ 
 // Caso especial de Creatio
 if (
     geojson &&
@@ -107,100 +118,112 @@ if (
 ) {
     geojson = geojson.__zone_symbol__value;
 }
-
+ 
 // Convertir JSON string a objeto
 if (typeof geojson === "string") {
     geojson = JSON.parse(geojson);
 }
-
+ 
 console.log("GeoJSON procesado:", geojson);
-
+ 
 console.log(
     "GeoJSON recibido:",
     event.data.geojson
 );
-
+ 
 console.log(
     "Tipo:",
     typeof event.data.geojson
 );
-                // Eliminar polígono actual
+                // Eliminar geometría actual
                 if (currentLayer) {
                     map.removeLayer(currentLayer);
                 }
 
-                // Dibujar polígono
-currentLayer =
-    L.geoJSON(geojson)
-     .addTo(map);
+                // Los círculos GeoJSON son Point con zoneType y radiusMeters.
+                const feature = geojson.type === "Feature" ? geojson : null;
+                const geometry = feature ? feature.geometry : geojson;
+                const properties = feature ? feature.properties : {};
+
+                if (
+                    geometry &&
+                    geometry.type === "Point" &&
+                    properties &&
+                    properties.zoneType === "CIRCLE" &&
+                    Number(properties.radiusMeters) > 0
+                ) {
+                    const coordinates = geometry.coordinates;
+                    const circle = L.circle(
+                        [coordinates[1], coordinates[0]],
+                        { radius: Number(properties.radiusMeters) }
+                    );
+                    currentLayer = L.featureGroup([circle]).addTo(map);
+                } else {
+                    currentLayer = L.geoJSON(geojson).addTo(map);
+                }
 	 
 const bounds = currentLayer.getBounds();
-
+ 
 console.log("Bounds:", bounds);
-
+ 
 if (bounds.isValid()) {
     map.fitBounds(bounds);
 }
-
+ 
 currentLayer.eachLayer(function(layer) {
-
+ 
     layer.pm.enable();
-
+ 
     layer.on('pm:edit', function() {
         enviarGeoJson(layer);
     });
-
+ 
 });
-
-                // Ajustar zoom
-                //map.fitBounds(
-               //     currentLayer.getBounds()
-               // );
-
+ 
                 console.log(
-                    "Polígono cargado"
+                    "Geometría cargada"
                 );
-
+ 
             } catch(ex) {
-
+ 
                 console.error(
-                    "Error cargando polígono",
+                    "Error cargando geometría",
                     ex
                 );
-
+ 
             }
         }
     }
 );
-
-    // Cuando se crea un polígono
+ 
+    // Cuando se crea un polígono o círculo
     map.on('pm:create', function(e) {
-
+ 
 const layer = e.layer;
-
-// Eliminar polígono anterior
+ 
+// Eliminar geometría anterior
 if (currentLayer) {
     map.removeLayer(currentLayer);
 }
-
+ 
 currentLayer = layer;
-
+ 
 layer.pm.enable();
-
+ 
 // Guardar GeoJSON
 enviarGeoJson(layer);
-
+ 
 layer.on('pm:edit', function() {
     enviarGeoJson(layer);
 });
-
+ 
 });
-
+ 
 window.parent.postMessage({
     type: "get_polygon"
 }, "*");
-
+ 
 </script>
-
+ 
 </body>
 </html>
