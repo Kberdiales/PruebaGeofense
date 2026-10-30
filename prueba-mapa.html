@@ -14,7 +14,9 @@
     <style>
         html, body {
             margin: 0;
+					   
             height: 100%;
+						
         }
  
         #map {
@@ -38,6 +40,9 @@
         [7.15, -83.05],
         [9.65, -77.15]
     ]);
+		   
+	  
+  
 
 	let currentLayer = null;
  
@@ -51,6 +56,10 @@
     ).addTo(map);
  
     // Controles Geoman
+						 
+							
+		 
+
     map.pm.addControls({
         position: 'topleft',
  
@@ -84,15 +93,23 @@
             }
             : layer.toGeoJSON();
 
+				   
         const geojson = JSON.stringify(feature);
+							 
+		  
 
         console.log("GeoJSON:");
         console.log(geojson);
+			   
+	  
 
         window.parent.postMessage({
+		 
             type: esCirculo ? "circle_created" : "polygon_created",
             geojson: geojson
         }, "*");
+		   
+	  
     }
 	
 	window.addEventListener(
@@ -103,6 +120,30 @@
             event.data &&
             event.data.type === "load_polygon"
         ) {
+				   
+		 
+
+			 
+
+						 
+								   
+
+		if (
+		    !event.data.geojson ||
+		    event.data.geojson === ""
+		) {
+		
+		    console.log(
+		        "Registro nuevo. No existe geocerca."
+		    );
+		
+		    map.setView(
+		        [8.9824, -79.5199],
+		        12
+		    );
+		
+		    return;
+		}			
  
             try {
  
@@ -117,11 +158,16 @@ if (
     geojson.__zone_symbol__value
 ) {
     geojson = geojson.__zone_symbol__value;
+												 
 }
  
 // Convertir JSON string a objeto
 if (typeof geojson === "string") {
+			   
+						 
     geojson = JSON.parse(geojson);
+							   
+					  
 }
  
 console.log("GeoJSON procesado:", geojson);
@@ -130,15 +176,29 @@ console.log(
     "GeoJSON recibido:",
     event.data.geojson
 );
+			 
  
 console.log(
     "Tipo:",
     typeof event.data.geojson
+							 
+
+								   
+								 
+
+									  
+
+							 
+								  
+									
+										  
+									 
 );
                 // Eliminar geometría actual
                 if (currentLayer) {
                     map.removeLayer(currentLayer);
                 }
+			  
 
                 // Los círculos GeoJSON son Point con zoneType y radiusMeters.
                 const feature = geojson.type === "Feature" ? geojson : null;
@@ -192,37 +252,63 @@ currentLayer.eachLayer(function(layer) {
                 );
  
             }
+					   
+				  
+			  
         }
     }
 );
  
     // Cuando se crea un polígono o círculo
+				
     map.on('pm:create', function(e) {
  
 const layer = e.layer;
+					
  
 // Eliminar geometría anterior
 if (currentLayer) {
     map.removeLayer(currentLayer);
+							
+			  
 }
  
 currentLayer = layer;
+				  
  
 layer.pm.enable();
  
 // Guardar GeoJSON
 enviarGeoJson(layer);
+				 
+		  
  
+				 
+					  
 layer.on('pm:edit', function() {
     enviarGeoJson(layer);
 });
  
 });
+						 
+				  
  
+			 
+		  
+	 
+  
+
+				  
+
 window.parent.postMessage({
+		 
     type: "get_polygon"
 }, "*");
+		   
+	  
  
+		 
+
 </script>
  
 </body>
