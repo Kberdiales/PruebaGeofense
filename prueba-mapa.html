@@ -32,37 +32,56 @@
     <script src="https://unpkg.com/@geoman-io/leaflet-geoman-free/dist/leaflet-geoman.min.js"></script>
 
     <script>
-        // Mostrar Panamá al iniciar.
+        // Centro inicial del mapa: Leaflet recibe [latitud, longitud].
         const PANAMA = [8.9824, -79.5199];
-        const map = L.map('map').setView(PANAMA, 8);
+        const GEOJSON_FIELD = "BANGeoJson";
+        const map = L.map("map").setView(PANAMA, 8);
+
         let currentLayer = null;
+        let currentWasFeatureCollection = false;
+        let clearingLayers = false;
 
-        console.log("Centro inicial:", map.getCenter());
+        // Usa el origen del contenedor cuando el navegador informa el referrer.
+        // Para producción, se recomienda configurar un origen fijo de Creatio.
+        const CREATIO_ORIGIN = (() => {
+            try {
+                const origin = new URL(document.referrer).origin;
+                return origin && origin !== "null" ? origin : "*";
+            } catch (_) {
+                return "*";
+            }
+        })();
 
-        // Capa base de OpenStreetMap HOT.
+        console.log("[Creatio GeoJSON] Mapa inicializado", {
+            center: map.getCenter(),
+            fieldName: GEOJSON_FIELD,
+            parentOrigin: CREATIO_ORIGIN
+        });
+
         L.tileLayer(
-            'https://{s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png',
+            "https://{s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png",
             {
-                attribution: '&copy; OpenStreetMap contributors',
+                attribution: "&copy; OpenStreetMap contributors",
                 maxZoom: 20
             }
         ).addTo(map);
 
-        // Corrige el tamaño del mapa cuando la página ya está visible.
         window.addEventListener("load", () => {
             setTimeout(() => {
                 map.invalidateSize();
-                map.setView(PANAMA, 8);
-                console.log("Mapa reajustado", map.getSize());
+                if (!currentLayer) {
+                    map.setView(PANAMA, 8);
+                }
+                console.log("[Creatio GeoJSON] Mapa reajustado", map.getSize());
             }, 1500);
         });
 
-        // Herramientas para dibujar y editar geometrías.
+        // Conserva Polygon, Rectangle y Circle del HTML de GitHub y habilita Point.
         map.pm.addControls({
-            position: 'topleft',
+            position: "topleft",
             drawPolygon: true,
             drawRectangle: true,
-            drawMarker: false,
+            drawMarker: true,
             drawCircle: true,
             drawCircleMarker: false,
             drawPolyline: false,
@@ -71,139 +90,492 @@
             removalMode: true
         });
 
-        // Envía GeoJSON a Creatio. Los círculos se representan como Point + radiusMeters.
-        function enviarGeoJson(layer) {
-            const esCirculo = layer instanceof L.Circle;
-            const feature = esCirculo
-                ? {
+        function isObject(value) {
+            return value !== null && typeof value === "object" && !Array.isArray(value);
+        }
+
+        function cloneJson(value) {
+            return value === undefined ? undefined : JSON.parse(JSON.stringify(value));
+        }
+
+        function isPosition(position) {
+            return Array.isArray(position) &&
+                position.length >= 2 &&
+                Number.isFinite(position[0]) &&
+                Number.isFinite(position[1]) &&
+                position[0] >= -180 && position[0] <= 180 &&
+                position[1] >= -90 && position[1] <= 90 &&
+                position.slice(2).every(Number.isFinite);
+        }
+
+        function samePosition(first, last) {
+            return Array.isArray(first) && Array.isArray(last) &&
+                first.length >= 2 && last.length >= 2 &&
+                Math.abs(first[0] - last[0]) <= 1e-10 &&
+                Math.abs(first[1] - last[1]) <= 1e-10;
+        }
+
+        function validateLineString(coordinates, minPositions) {
+            return Array.isArray(coordinates) &&
+                coordinates.length >= minPositions &&
+                coordinates.every(isPosition);
+        }
+
+        function validateLinearRing(ring) {
+            if (!validateLineString(ring, 4) || !samePosition(ring[0], ring[ring.length - 1])) {
+                return false;
+            }
+
+            const uniquePositions = new Set(
+                ring.slice(0, -1).map(position => `${position[0]},${position[1]}`)
+            );
+            return uniquePositions.size >= 3;
+        }
+
+        function geometryValidationError(geometry, path) {
+            if (!isObject(geometry) || typeof geometry.type !== "string") {
+                return `${path} no es una geometría GeoJSON válida.`;
+            }
+
+            const coordinates = geometry.coordinates;
+            switch (geometry.type) {
+                case "Point":
+                    return isPosition(coordinates) ? null : `${path}.coordinates no es una posición [longitud, latitud] válida.`;
+
+                case "MultiPoint":
+                    return Array.isArray(coordinates) && coordinates.length > 0 && coordinates.every(isPosition)
+                        ? null
+                        : `${path}.coordinates no contiene posiciones válidas.`;
+
+                case "LineString":
+                    return validateLineString(coordinates, 2)
+                        ? null
+                        : `${path}.coordinates debe contener al menos dos posiciones válidas.`;
+
+                case "MultiLineString":
+                    return Array.isArray(coordinates) && coordinates.length > 0 &&
+                        coordinates.every(line => validateLineString(line, 2))
+                        ? null
+                        : `${path}.coordinates contiene una línea inválida.`;
+
+                case "Polygon":
+                    return Array.isArray(coordinates) && coordinates.length > 0 &&
+                        coordinates.every(validateLinearRing)
+                        ? null
+                        : `${path}.coordinates debe contener anillos cerrados con al menos tres vértices distintos.`;
+
+                case "MultiPolygon":
+                    return Array.isArray(coordinates) && coordinates.length > 0 &&
+                        coordinates.every(polygon => Array.isArray(polygon) && polygon.length > 0 && polygon.every(validateLinearRing))
+                        ? null
+                        : `${path}.coordinates contiene un polígono o anillo inválido.`;
+
+                case "GeometryCollection":
+                    if (!Array.isArray(geometry.geometries)) {
+                        return `${path}.geometries debe ser un arreglo.`;
+                    }
+                    for (let index = 0; index < geometry.geometries.length; index++) {
+                        const error = geometryValidationError(geometry.geometries[index], `${path}.geometries[${index}]`);
+                        if (error) return error;
+                    }
+                    return null;
+
+                default:
+                    return `${path}.type no está soportado: ${geometry.type}.`;
+            }
+        }
+
+        function featureValidationError(feature, path) {
+            if (!isObject(feature) || feature.type !== "Feature") {
+                return `${path} debe tener type="Feature".`;
+            }
+
+            if (feature.properties !== undefined && feature.properties !== null && !isObject(feature.properties)) {
+                return `${path}.properties debe ser un objeto o null.`;
+            }
+
+            // GeoJSON permite geometry:null. No se dibuja, pero tampoco se envía a Leaflet.
+            if (feature.geometry === null) return null;
+
+            const error = geometryValidationError(feature.geometry, `${path}.geometry`);
+            if (error) return error;
+
+            const properties = feature.properties || {};
+            if (
+                feature.geometry.type === "Point" &&
+                String(properties.zoneType || "").toUpperCase() === "CIRCLE"
+            ) {
+                const radius = Number(properties.radiusMeters);
+                if (!Number.isFinite(radius) || radius <= 0) {
+                    return `${path}.properties.radiusMeters debe ser un número mayor que cero para un círculo.`;
+                }
+            }
+
+            return null;
+        }
+
+        function geoJsonValidationError(geojson) {
+            if (!isObject(geojson) || typeof geojson.type !== "string") {
+                return "El valor raíz no es un objeto GeoJSON con propiedad type.";
+            }
+
+            if (geojson.type === "Feature") {
+                return featureValidationError(geojson, "GeoJSON");
+            }
+
+            if (geojson.type === "FeatureCollection") {
+                if (!Array.isArray(geojson.features)) {
+                    return "GeoJSON.features debe ser un arreglo.";
+                }
+                for (let index = 0; index < geojson.features.length; index++) {
+                    const error = featureValidationError(geojson.features[index], `GeoJSON.features[${index}]`);
+                    if (error) return error;
+                }
+                return null;
+            }
+
+            return geometryValidationError(geojson, "GeoJSON");
+        }
+
+        function parseCreatioGeoJson(rawValue) {
+            let value = rawValue;
+
+            // Creatio puede entregar el campo como JSON serializado o dentro de un wrapper.
+            for (let attempt = 0; attempt < 4; attempt++) {
+                if (value === null || value === undefined) {
+                    return { empty: true, value: null };
+                }
+
+                if (typeof value === "string") {
+                    const trimmed = value.trim();
+                    if (!trimmed) return { empty: true, value: null };
+                    try {
+                        value = JSON.parse(trimmed);
+                        continue;
+                    } catch (error) {
+                        return { error: `JSON.parse falló: ${error.message}`, value: null };
+                    }
+                }
+
+                if (isObject(value) && Object.prototype.hasOwnProperty.call(value, "__zone_symbol__value")) {
+                    value = value.__zone_symbol__value;
+                    continue;
+                }
+
+                return { empty: false, value };
+            }
+
+            if (typeof value === "string") {
+                return { error: "El valor sigue siendo una cadena después de varios intentos de parseo.", value: null };
+            }
+
+            return { empty: value === null || value === undefined, value };
+        }
+
+        function getFeatures(geojson) {
+            if (geojson.type === "FeatureCollection") return geojson.features;
+            if (geojson.type === "Feature") return [geojson];
+            return [{ type: "Feature", geometry: geojson, properties: {} }];
+        }
+
+        function createLeafletLayers(feature) {
+            if (!feature.geometry) return [];
+
+            const properties = feature.properties || {};
+            const isCircle = feature.geometry.type === "Point" &&
+                String(properties.zoneType || "").toUpperCase() === "CIRCLE";
+
+            if (isCircle) {
+                const coordinates = feature.geometry.coordinates;
+                const circle = L.circle(
+                    [coordinates[1], coordinates[0]],
+                    { radius: Number(properties.radiusMeters) }
+                );
+                circle._creatioFeature = cloneJson(feature);
+                return [circle];
+            }
+
+            const geoJsonLayer = L.geoJSON(feature);
+            const layers = [];
+            geoJsonLayer.eachLayer(layer => layers.push(layer));
+            return layers;
+        }
+
+        function collectLeafLayers(layer, result) {
+            if (!layer) return;
+            if (typeof layer.eachLayer === "function") {
+                layer.eachLayer(child => collectLeafLayers(child, result));
+            } else {
+                result.push(layer);
+            }
+        }
+
+        function serializeLayer(layer) {
+            if (layer instanceof L.Circle) {
+                const original = layer._creatioFeature || {};
+                const originalProperties = isObject(original.properties) ? original.properties : {};
+                const latLng = layer.getLatLng();
+                return {
                     type: "Feature",
+                    ...(original.id !== undefined ? { id: original.id } : {}),
                     geometry: {
                         type: "Point",
-                        coordinates: [
-                            layer.getLatLng().lng,
-                            layer.getLatLng().lat
-                        ]
+                        coordinates: [latLng.lng, latLng.lat]
                     },
                     properties: {
+                        ...originalProperties,
                         zoneType: "CIRCLE",
                         radiusMeters: layer.getRadius()
                     }
+                };
+            }
+
+            const result = layer.toGeoJSON();
+            if (result.type === "FeatureCollection") return result.features;
+            if (result.type === "Feature") {
+                if (layer.feature && layer.feature.id !== undefined && result.id === undefined) {
+                    result.id = layer.feature.id;
                 }
-                : layer.toGeoJSON();
-
-            const geojson = JSON.stringify(feature);
-            console.log("GeoJSON:", geojson);
-
-            window.parent.postMessage({
-                type: esCirculo ? "circle_created" : "polygon_created",
-                geojson: geojson
-            }, "*");
+                return result;
+            }
+            return { type: "Feature", geometry: result, properties: {} };
         }
 
-        window.addEventListener("message", function(event) {
-            if (!event.data || event.data.type !== "load_polygon") {
+        function serializeCurrentGeoJson() {
+            const layers = [];
+            collectLeafLayers(currentLayer, layers);
+
+            const features = [];
+            layers.forEach(layer => {
+                const serialized = serializeLayer(layer);
+                if (Array.isArray(serialized)) features.push(...serialized);
+                else features.push(serialized);
+            });
+
+            if (currentWasFeatureCollection || features.length > 1) {
+                return { type: "FeatureCollection", features };
+            }
+            return features[0] || null;
+        }
+
+        function postToCreatio(message) {
+            console.log("[Creatio GeoJSON] Enviando postMessage", message);
+            window.parent.postMessage(message, CREATIO_ORIGIN);
+        }
+
+        function messageTypeForGeoJson(geojson) {
+            const features = getFeatures(geojson);
+            if (features.length === 1) {
+                const feature = features[0];
+                if (
+                    feature.geometry &&
+                    feature.geometry.type === "Point" &&
+                    String((feature.properties || {}).zoneType || "").toUpperCase() === "CIRCLE"
+                ) {
+                    return "circle_created";
+                }
+            }
+            // Se conserva el nombre usado por la integración existente para polygon/rectangle.
+            return "polygon_created";
+        }
+
+        function enviarGeoJson() {
+            const geojson = serializeCurrentGeoJson();
+            if (!geojson) {
+                console.warn("[Creatio GeoJSON] No hay geometría que guardar.");
                 return;
             }
 
-            if (!event.data.geojson || event.data.geojson === "") {
-                console.log("Registro nuevo. No existe geocerca.");
-                map.invalidateSize();
-                map.setView(PANAMA, 8);
+            const serialized = JSON.stringify(geojson);
+            console.log("[Creatio GeoJSON] Geometría lista para BANGeoJson", geojson);
+
+            postToCreatio({
+                type: messageTypeForGeoJson(geojson),
+                action: "save",
+                fieldName: GEOJSON_FIELD,
+                geojson: serialized
+            });
+        }
+
+        function clearCurrentLayer() {
+            if (!currentLayer) {
+                currentWasFeatureCollection = false;
                 return;
             }
+
+            clearingLayers = true;
+            const layerToRemove = currentLayer;
+            currentLayer = null;
+            currentWasFeatureCollection = false;
 
             try {
-                let geojson = event.data.geojson;
-                console.log("GeoJSON recibido:", geojson);
-
-                // Compatibilidad con el wrapper que puede entregar Creatio.
-                if (
-                    geojson &&
-                    typeof geojson === "object" &&
-                    geojson.__zone_symbol__value
-                ) {
-                    geojson = geojson.__zone_symbol__value;
-                }
-
-                // Convierte una cadena JSON a objeto.
-                if (typeof geojson === "string") {
-                    geojson = JSON.parse(geojson);
-                }
-
-                // Elimina la geometría actual antes de cargar otra.
-                if (currentLayer) {
-                    map.removeLayer(currentLayer);
-                }
-
-                // Los círculos GeoJSON son Point con zoneType y radiusMeters.
-                const feature = geojson.type === "Feature" ? geojson : null;
-                const geometry = feature ? feature.geometry : geojson;
-                const properties = feature ? feature.properties : {};
-
-                if (
-                    geometry &&
-                    geometry.type === "Point" &&
-                    properties &&
-                    properties.zoneType === "CIRCLE" &&
-                    Number(properties.radiusMeters) > 0
-                ) {
-                    const coordinates = geometry.coordinates;
-                    const circle = L.circle(
-                        [coordinates[1], coordinates[0]],
-                        { radius: Number(properties.radiusMeters) }
-                    );
-                    currentLayer = L.featureGroup([circle]).addTo(map);
-                } else {
-                    currentLayer = L.geoJSON(geojson).addTo(map);
-                }
-
-                const bounds = currentLayer.getBounds();
-                console.log("Bounds:", bounds);
-
-                if (bounds.isValid()) {
-                    map.fitBounds(bounds);
-                }
-
-                currentLayer.eachLayer(function(layer) {
-                    if (layer.pm) {
-                        layer.pm.enable();
-                    }
-
-                    layer.on('pm:edit', function() {
-                        enviarGeoJson(layer);
+                if (map.hasLayer(layerToRemove)) {
+                    map.removeLayer(layerToRemove);
+                } else if (typeof layerToRemove.eachLayer === "function") {
+                    layerToRemove.eachLayer(layer => {
+                        if (map.hasLayer(layer)) map.removeLayer(layer);
                     });
-                });
-
-                console.log("Geometría cargada");
-            } catch (ex) {
-                console.error("Error cargando geometría", ex);
+                }
+            } finally {
+                clearingLayers = false;
             }
+        }
+
+        function notifyCreatioToClear() {
+            postToCreatio({
+                type: "geojson_cleared",
+                action: "clear",
+                fieldName: GEOJSON_FIELD,
+                geojson: null
+            });
+        }
+
+        function resetMapView() {
+            map.invalidateSize();
+            map.setView(PANAMA, 8);
+        }
+
+        function renderGeoJson(geojson) {
+            const features = getFeatures(geojson);
+            const nextLayers = [];
+
+            try {
+                features.forEach(feature => {
+                    nextLayers.push(...createLeafletLayers(feature));
+                });
+            } catch (error) {
+                console.warn("[Creatio GeoJSON] No se pudo preparar la geometría; el mapa no se modificó.", error, geojson);
+                return false;
+            }
+
+            clearCurrentLayer();
+            currentWasFeatureCollection = geojson.type === "FeatureCollection";
+
+            if (nextLayers.length === 0) {
+                console.warn("[Creatio GeoJSON] GeoJSON válido, pero no contiene geometrías dibujables.");
+                resetMapView();
+                return true;
+            }
+
+            currentLayer = L.featureGroup(nextLayers).addTo(map);
+            attachLayerListeners(currentLayer);
+
+            const bounds = currentLayer.getBounds();
+            console.log("[Creatio GeoJSON] Geometría cargada; bounds:", bounds);
+            if (bounds.isValid()) map.fitBounds(bounds);
+            map.invalidateSize();
+            return true;
+        }
+
+        function getMessageGeoJson(message) {
+            if (Object.prototype.hasOwnProperty.call(message, "geojson")) return message.geojson;
+            if (Object.prototype.hasOwnProperty.call(message, GEOJSON_FIELD)) return message[GEOJSON_FIELD];
+            if (Object.prototype.hasOwnProperty.call(message, "value")) return message.value;
+            return undefined;
+        }
+
+        function isSupportedLoadMessage(message) {
+            return isObject(message) &&
+                ["load_polygon", "load_geojson", "load_geometry", "set_geojson"].includes(message.type);
+        }
+
+        window.addEventListener("message", event => {
+            if (event.source !== window.parent) {
+                console.warn("[Creatio GeoJSON] Se ignoró un mensaje que no proviene del contenedor padre.");
+                return;
+            }
+
+            if (CREATIO_ORIGIN !== "*" && event.origin !== CREATIO_ORIGIN) {
+                console.warn("[Creatio GeoJSON] Se ignoró un mensaje de origen no permitido:", event.origin);
+                return;
+            }
+
+            if (!isSupportedLoadMessage(event.data)) return;
+
+            const rawValue = getMessageGeoJson(event.data);
+            console.debug("[Creatio GeoJSON] Mensaje recibido desde Creatio", {
+                messageType: event.data.type,
+                fieldName: event.data.fieldName || GEOJSON_FIELD,
+                valueType: typeof rawValue,
+                value: rawValue
+            });
+
+            const parsed = parseCreatioGeoJson(rawValue);
+            if (parsed.empty) {
+                console.info("[Creatio GeoJSON] Campo BANGeoJson vacío; se muestra el mapa sin geometría.");
+                clearCurrentLayer();
+                resetMapView();
+                return;
+            }
+
+            if (parsed.error) {
+                console.warn("[Creatio GeoJSON] Valor recibido no válido; no se envió a Leaflet:", parsed.error, rawValue);
+                return;
+            }
+
+            const validationError = geoJsonValidationError(parsed.value);
+            if (validationError) {
+                console.warn("[Creatio GeoJSON] GeoJSON inválido; no se envió a L.geoJSON():", validationError, parsed.value);
+                return;
+            }
+
+            console.debug("[Creatio GeoJSON] GeoJSON validado; coordenadas de entrada [longitud, latitud].", parsed.value);
+            renderGeoJson(parsed.value);
         });
 
-        // Reemplaza la geometría existente al dibujar una nueva.
-        map.on('pm:create', function(e) {
-            const layer = e.layer;
+        function attachLayerListeners(layerOrGroup) {
+            const layers = [];
+            collectLeafLayers(layerOrGroup, layers);
 
-            if (currentLayer) {
-                map.removeLayer(currentLayer);
+            layers.forEach(layer => {
+                if (layer.pm) layer.pm.enable();
+                layer.on("pm:edit", enviarGeoJson);
+                layer.on("pm:dragend", enviarGeoJson);
+            });
+        }
+
+        function containsLayer(container, target) {
+            if (!container || !target) return false;
+            if (container === target) return true;
+
+            if (typeof container.eachLayer === "function") {
+                let found = false;
+                container.eachLayer(child => {
+                    if (!found && containsLayer(child, target)) found = true;
+                });
+                return found;
             }
+            return false;
+        }
 
+        // Una nueva geometría reemplaza la anterior, como en la implementación actual.
+        map.on("pm:create", event => {
+            const layer = event.layer;
+            clearCurrentLayer();
+            currentWasFeatureCollection = false;
             currentLayer = layer;
 
-            if (layer.pm) {
-                layer.pm.enable();
-            }
-
-            enviarGeoJson(layer);
-
-            layer.on('pm:edit', function() {
-                enviarGeoJson(layer);
-            });
+            if (!map.hasLayer(layer)) layer.addTo(map);
+            attachLayerListeners(layer);
+            enviarGeoJson();
         });
 
-        // Solicita la geometría existente al contenedor Creatio.
+        // Al borrar una geometría administrada se limpia BANGeoJson en Creatio.
+        map.on("pm:remove", event => {
+            if (clearingLayers || !currentLayer || !containsLayer(currentLayer, event.layer)) return;
+
+            console.info("[Creatio GeoJSON] Geometría eliminada desde Geoman; se limpiará BANGeoJson.");
+            clearCurrentLayer();
+            notifyCreatioToClear();
+            resetMapView();
+        });
+
+        // Conserva el protocolo existente y solicita el campo correcto de Creatio.
         setTimeout(() => {
-            window.parent.postMessage({ type: "get_polygon" }, "*");
+            postToCreatio({
+                type: "get_polygon",
+                fieldName: GEOJSON_FIELD
+            });
         }, 2000);
     </script>
 </body>
