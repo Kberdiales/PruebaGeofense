@@ -3,7 +3,12 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Geofence Map - Panamá</title>
+    <title>Geofence Map - Panamá (v2)</title>
+
+    <!-- Reduce el tiempo de conexión a recursos externos. -->
+    <link rel="preconnect" href="https://api.maptiler.com" crossorigin>
+    <link rel="preconnect" href="https://tile.openstreetmap.org" crossorigin>
+    <link rel="preconnect" href="https://unpkg.com" crossorigin>
 
     <link rel="stylesheet"
           href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
@@ -20,13 +25,35 @@
         }
 
         #map {
+            position: relative;
             width: 100%;
             height: 100%;
+            background: #eef2f4;
+        }
+
+        #map-status {
+            position: absolute;
+            z-index: 1000;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            padding: 10px 14px;
+            border-radius: 6px;
+            background: rgba(255, 255, 255, 0.94);
+            color: #334155;
+            font: 14px/1.4 Arial, sans-serif;
+            box-shadow: 0 1px 6px rgba(0, 0, 0, 0.18);
+        }
+
+        #map-status[hidden] {
+            display: none;
         }
     </style>
 </head>
 <body>
-    <div id="map"></div>
+    <div id="map">
+        <div id="map-status" role="status" aria-live="polite">Cargando geocerca…</div>
+    </div>
 
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script src="https://unpkg.com/@geoman-io/leaflet-geoman-free/dist/leaflet-geoman.min.js"></script>
@@ -35,7 +62,94 @@
         // Centro inicial del mapa: Leaflet recibe [latitud, longitud].
         const PANAMA = [8.9824, -79.5199];
         const GEOJSON_FIELD = "BANCoordenadas";
-        const map = L.map("map").setView(PANAMA, 8);
+        // MapTiler Streets ofrece una capa vial detallada y CDN. La clave debe
+        // limitarse al origen que sirve este iframe (p. ej. kberdiales.github.io).
+        const MAPTILER_API_KEY = "REEMPLAZAR_CON_API_KEY_MAPTILER";
+        const USE_MAPTILER = MAPTILER_API_KEY &&
+            MAPTILER_API_KEY !== "REEMPLAZAR_CON_API_KEY_MAPTILER";
+
+        const map = L.map("map", {
+            preferCanvas: true,
+            zoomAnimation: false,
+            fadeAnimation: false,
+            markerZoomAnimation: false
+        }).setView(PANAMA, 8);
+
+        const mapStatus = document.getElementById("map-status");
+        let basemapAdded = false;
+        let initialDataReceived = false;
+        let initialRequestAttempts = 0;
+        let initialRequestTimer = null;
+        let basemapLoadTimeout = null;
+        let basemapTileErrors = 0;
+
+        const basemap = USE_MAPTILER
+            ? L.tileLayer(
+                `https://api.maptiler.com/maps/streets-v4/{z}/{x}/{y}.png?key=${encodeURIComponent(MAPTILER_API_KEY)}`,
+                {
+                    tileSize: 512,
+                    zoomOffset: -1,
+                    minZoom: 1,
+                    maxZoom: 21,
+                    maxNativeZoom: 21,
+                    crossOrigin: true,
+                    updateWhenIdle: true,
+                    keepBuffer: 2,
+                    attribution: '<a href="https://www.maptiler.com/copyright/" target="_blank" rel="noopener">© MapTiler</a> <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">© OpenStreetMap contributors</a>'
+                }
+            )
+            : L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+                minZoom: 1,
+                maxZoom: 19,
+                updateWhenIdle: true,
+                keepBuffer: 2,
+                attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap contributors</a>'
+            });
+
+        function addBasemap() {
+            if (!basemapAdded) {
+                if (mapStatus) {
+                    mapStatus.hidden = false;
+                    mapStatus.textContent = "Cargando mapa…";
+                }
+                basemap.on("load", hideMapStatus);
+                basemap.on("tileerror", () => {
+                    basemapTileErrors++;
+                    if (basemapTileErrors >= 3 && mapStatus) {
+                        mapStatus.hidden = false;
+                        mapStatus.textContent = USE_MAPTILER
+                            ? "No se pudieron cargar las teselas. Revisa la clave de MapTiler y su restricción de dominio."
+                            : "No se pudieron cargar las teselas. Revisa la conexión de red.";
+                    }
+                });
+                basemap.addTo(map);
+                basemapAdded = true;
+                basemapLoadTimeout = setTimeout(() => {
+                    if (mapStatus && !mapStatus.hidden) {
+                        mapStatus.textContent = "El mapa tarda en responder. Revisa la conexión o el proveedor de teselas.";
+                    }
+                }, 12000);
+            }
+        }
+
+        function hideMapStatus() {
+            if (basemapLoadTimeout) {
+                clearTimeout(basemapLoadTimeout);
+                basemapLoadTimeout = null;
+            }
+            if (mapStatus) mapStatus.hidden = true;
+        }
+
+        function finishInitialLoadWithoutGeometry() {
+            if (initialDataReceived) return;
+            initialDataReceived = true;
+            if (initialRequestTimer) {
+                clearInterval(initialRequestTimer);
+                initialRequestTimer = null;
+            }
+            map.setView(PANAMA, 8, { animate: false });
+            addBasemap();
+        }
 
         let currentLayer = null;
         let currentWasFeatureCollection = false;
@@ -53,28 +167,32 @@
         })();
 
         console.log("[Creatio GeoJSON] Mapa inicializado", {
-            center: map.getCenter(),
+            center: PANAMA,
             fieldName: GEOJSON_FIELD,
-            parentOrigin: CREATIO_ORIGIN
+            parentOrigin: CREATIO_ORIGIN,
+            basemap: USE_MAPTILER ? "MapTiler Streets v4" : "OpenStreetMap standard (fallback de prueba)"
         });
+        if (!USE_MAPTILER) {
+            console.warn(
+                "[Creatio GeoJSON] Configura MAPTILER_API_KEY para usar MapTiler Streets en producción. " +
+                "El fallback de OpenStreetMap estándar es solo para pruebas y está sujeto a su política de uso."
+            );
+						   
+        }
+					 
 
-        L.tileLayer(
-            "https://{s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png",
-            {
-                attribution: "&copy; OpenStreetMap contributors",
-                maxZoom: 20
-            }
-        ).addTo(map);
-
-        window.addEventListener("load", () => {
-            setTimeout(() => {
-                map.invalidateSize();
-                if (!currentLayer) {
-                    map.setView(PANAMA, 8);
-                }
-                console.log("[Creatio GeoJSON] Mapa reajustado", map.getSize());
-            }, 1500);
-        });
+        // Evita tamaños incorrectos al abrir o redimensionar la pestaña de Creatio.
+        if (typeof ResizeObserver !== "undefined") {
+            const mapResizeObserver = new ResizeObserver(() => {
+                map.invalidateSize({ pan: false, animate: false });
+									
+										   
+				 
+																				
+					 
+            });
+            mapResizeObserver.observe(document.getElementById("map"));
+        }
 
         // Conserva Polygon, Rectangle y Circle del HTML de GitHub y habilita Point.
         map.pm.addControls({
@@ -444,8 +562,9 @@
         }
 
         function resetMapView() {
-            map.invalidateSize();
-            map.setView(PANAMA, 8);
+            map.invalidateSize({ pan: false, animate: false });
+            map.setView(PANAMA, 8, { animate: false });
+            addBasemap();
         }
 
         function renderGeoJson(geojson) {
@@ -475,8 +594,15 @@
 
             const bounds = currentLayer.getBounds();
             console.log("[Creatio GeoJSON] Geometría cargada; bounds:", bounds);
-            if (bounds.isValid()) map.fitBounds(bounds);
-            map.invalidateSize();
+            map.invalidateSize({ pan: false, animate: false });
+            if (bounds.isValid()) {
+                map.fitBounds(bounds, {
+                    animate: false,
+                    padding: [24, 24],
+                    maxZoom: 18
+                });
+            }
+            addBasemap();
             return true;
         }
 
@@ -516,6 +642,11 @@
             const parsed = parseCreatioGeoJson(rawValue);
             if (parsed.empty) {
                 console.info("[Creatio GeoJSON] Campo BANGeoJson vacío; se muestra el mapa sin geometría.");
+                initialDataReceived = true;
+                if (initialRequestTimer) {
+                    clearInterval(initialRequestTimer);
+                    initialRequestTimer = null;
+                }
                 clearCurrentLayer();
                 resetMapView();
                 return;
@@ -532,6 +663,11 @@
                 return;
             }
 
+            initialDataReceived = true;
+            if (initialRequestTimer) {
+                clearInterval(initialRequestTimer);
+                initialRequestTimer = null;
+            }
             console.debug("[Creatio GeoJSON] GeoJSON validado; coordenadas de entrada [longitud, latitud].", parsed.value);
             renderGeoJson(parsed.value);
         });
@@ -583,13 +719,32 @@
             resetMapView();
         });
 
-        // Conserva el protocolo existente y solicita el campo correcto de Creatio.
-        setTimeout(() => {
+        // Solicita el GeoJSON enseguida y reintenta brevemente por si Creatio
+        // todavía no había conectado su listener al cargar el iframe.
+        function requestInitialGeoJson() {
+            if (initialDataReceived) {
+                if (initialRequestTimer) {
+                    clearInterval(initialRequestTimer);
+                    initialRequestTimer = null;
+                }
+                return;
+            }
+
+            if (initialRequestAttempts >= 8) {
+                console.warn("[Creatio GeoJSON] Creatio no respondió a la solicitud inicial; se muestra Panamá como vista por defecto.");
+                finishInitialLoadWithoutGeometry();
+                return;
+            }
+
+            initialRequestAttempts++;
             postToCreatio({
                 type: "get_polygon",
                 fieldName: GEOJSON_FIELD
             });
-        }, 2000);
+        }
+
+        requestInitialGeoJson();
+        initialRequestTimer = setInterval(requestInitialGeoJson, 400);
     </script>
 </body>
 </html>
