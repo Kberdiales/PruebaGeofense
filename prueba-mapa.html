@@ -81,7 +81,7 @@
             position: "topleft",
             drawPolygon: true,
             drawRectangle: true,
-            drawMarker: true,
+            drawMarker: false,
             drawCircle: true,
             drawCircleMarker: false,
             drawPolyline: false,
@@ -379,6 +379,18 @@
             return "polygon_created";
         }
 
+        function geometryTypeForGeoJson(geojson) {
+            const features = getFeatures(geojson);
+            if (features.length !== 1 || !features[0].geometry) return "MULTIPLE";
+        
+            const feature = features[0];
+            const zoneType = String((feature.properties || {}).zoneType || "").toUpperCase();
+        
+            if (feature.geometry.type === "Polygon") return "POLYGON";
+            if (feature.geometry.type === "Point") return zoneType === "CIRCLE" ? "CIRCLE" : "POINT";
+            return feature.geometry.type.toUpperCase();
+        }
+
         function enviarGeoJson() {
             const geojson = serializeCurrentGeoJson();
             if (!geojson) {
@@ -393,7 +405,8 @@
                 type: messageTypeForGeoJson(geojson),
                 action: "save",
                 fieldName: GEOJSON_FIELD,
-                geojson: serialized
+                geojson: serialized,
+                geometryType: geometryTypeForGeoJson(geojson)
             });
         }
 
