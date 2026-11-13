@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="ban-map" content="BAN-GEOFENSE-MAP">
-    <title>Geofence Map - Panamá (v4)</title>
+    <title>Geofence Map - Panamá (v5)</title>
 
     <!-- Reduce el tiempo de conexión a recursos externos. -->
     <link rel="preconnect" href="https://api.maptiler.com" crossorigin>
@@ -241,7 +241,6 @@
     </div>
 
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-    <script src="https://cdn.maptiler.com/maptiler-geocoding-control/v3.1.0/leaflet.umd.js"></script>
     <script src="https://unpkg.com/@geoman-io/leaflet-geoman-free/dist/leaflet-geoman.min.js"></script>
 
     <script>
@@ -273,6 +272,11 @@
         let initialRequestTimer = null;
         let basemapLoadTimeout = null;
         let basemapTileErrors = 0;
+        // Encuadre pendiente hasta que el contenedor tenga un tamaño real.
+        let pendingFitBounds = null;
+        let lastFitBounds = null;
+        let autoFitActive = false;
+        let resizeFitTimer = null;
 
         const MAPTILER_ATTRIBUTION =
             '<a href="https://www.maptiler.com/copyright/" target="_blank" rel="noopener">© MapTiler</a> ' +
@@ -358,6 +362,49 @@
             if (mapStatus) mapStatus.hidden = true;
         }
 
+        // Encuadre diferido: si el iframe aún mide 0×0 (pestaña no visible),
+        // fitBounds calcula zoom infinito y el mapa aterriza dentro de la zona.
+        function applyFit(bounds) {
+            map.invalidateSize({ pan: false, animate: false });
+            map.fitBounds(bounds, {
+                padding: [28, 28],
+                maxZoom: 17,
+                animate: false
+            });
+
+            // Las teselas se piden recién ahora, con el encuadre ya correcto.
+            addBasemap();
+        }
+
+        function applyPendingFit() {
+            if (!pendingFitBounds) return;
+
+            const size = map.getSize();
+            if (!size || size.x < 50 || size.y < 50) return;
+
+            const bounds = pendingFitBounds;
+            pendingFitBounds = null;
+            lastFitBounds = bounds;
+            autoFitActive = true;
+
+            applyFit(bounds);
+        }
+
+        function fitToGeometry(bounds) {
+            if (!bounds || !bounds.isValid()) return;
+            pendingFitBounds = bounds;
+            applyPendingFit();
+        }
+
+        // El encuadre automático se re-aplica al redimensionar, pero se desactiva
+        // en cuanto el usuario interactúa con el mapa.
+        map.on("mousedown touchstart", () => {
+            autoFitActive = false;
+        });
+        map.getContainer().addEventListener("wheel", () => {
+            autoFitActive = false;
+        }, { passive: true });
+
         function finishInitialLoadWithoutGeometry() {
             if (initialDataReceived) return;
             initialDataReceived = true;
@@ -414,6 +461,17 @@
         if (typeof ResizeObserver !== "undefined") {
             const mapResizeObserver = new ResizeObserver(() => {
                 map.invalidateSize({ pan: false, animate: false });
+
+                if (!pendingFitBounds && !(autoFitActive && lastFitBounds)) return;
+
+                if (resizeFitTimer) clearTimeout(resizeFitTimer);
+                resizeFitTimer = setTimeout(() => {
+                    if (pendingFitBounds) {
+                        applyPendingFit();
+                    } else if (autoFitActive && lastFitBounds) {
+                        applyFit(lastFitBounds);
+                    }
+                }, 150);
             });
             mapResizeObserver.observe(document.getElementById("map"));
         }
@@ -875,13 +933,7 @@
             }
 
             const bounds = currentLayer.getBounds();
-            if (!bounds || !bounds.isValid()) return;
-
-            map.fitBounds(bounds, {
-                padding: SEARCH_CONFIG.fitPadding,
-                maxZoom: 18,
-                animate: false
-            });
+            if (bounds && bounds.isValid()) fitToGeometry(bounds);
         }
 
         function formatArea(squareMeters) {
@@ -1311,6 +1363,10 @@
         }
 
         function clearCurrentLayer() {
+            pendingFitBounds = null;
+            lastFitBounds = null;
+            autoFitActive = false;
+
             if (!currentLayer) {
                 currentWasFeatureCollection = false;
                 refreshMetrics();
@@ -1381,15 +1437,11 @@
 
             const bounds = currentLayer.getBounds();
             console.log("[Creatio GeoJSON] Geometría cargada; bounds:", bounds);
-            map.invalidateSize({ pan: false, animate: false });
             if (bounds.isValid()) {
-                map.fitBounds(bounds, {
-                    animate: false,
-                    padding: [24, 24],
-                    maxZoom: 18
-                });
+                fitToGeometry(bounds);
+            } else {
+                addBasemap();
             }
-            addBasemap();
             return true;
         }
 
@@ -1547,13 +1599,19 @@
             });
         }
 
-        try {
-            initLocationSearch();
-        } catch (error) {
-            console.warn("[Creatio GeoJSON] La búsqueda no se pudo inicializar:", error);
-        }
+        // La librería del buscador (~136 KB) no bloquea el primer render del mapa.
+        function loadGeocoderLibrary() {
+            if (window.maptilerGeocoder) return Promise.resolve();
 
-        addBaseLayersControl();
+            return new Promise((resolve, reject) => {
+                const script = document.createElement("script");
+                script.src = "https://cdn.maptiler.com/maptiler-geocoding-control/v3.1.0/leaflet.umd.js";
+                script.async = true;
+                script.onload = resolve;
+                script.onerror = () => reject(new Error("No se pudo cargar MapTiler Geocoding Control."));
+                document.head.appendChild(script);
+            });
+        }
 
         if (isEmbedded()) {
             requestInitialGeoJson();
@@ -1562,6 +1620,20 @@
             console.info("[Creatio GeoJSON] Vista previa sin contenedor Creatio: no se solicita geometría guardada.");
             addBasemap();
         }
+
+        // Diferido: el buscador se agrega después del primer encuadre.
+        setTimeout(() => {
+            loadGeocoderLibrary()
+                .then(() => {
+                    try {
+                        initLocationSearch();
+                    } catch (error) {
+                        console.warn("[Creatio GeoJSON] La búsqueda no se pudo inicializar:", error);
+                    }
+                })
+                .catch(error => console.warn("[Creatio GeoJSON]", error.message))
+                .finally(addBaseLayersControl);
+        }, 250);
     </script>
 </body>
 </html>
