@@ -3,12 +3,14 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Geofence Map - Panamá (v2)</title>
+    <meta name="ban-map" content="BAN-GEOFENSE-MAP">
+    <title>Geofence Map - Panamá (v4)</title>
 
     <!-- Reduce el tiempo de conexión a recursos externos. -->
     <link rel="preconnect" href="https://api.maptiler.com" crossorigin>
     <link rel="preconnect" href="https://tile.openstreetmap.org" crossorigin>
     <link rel="preconnect" href="https://unpkg.com" crossorigin>
+    <link rel="preconnect" href="https://cdn.maptiler.com" crossorigin>
 
     <link rel="stylesheet"
           href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
@@ -48,6 +50,78 @@
         #map-status[hidden] {
             display: none;
         }
+
+        /* --- Búsqueda con autocompletado --------------------------------- */
+        #search-status {
+            position: absolute;
+            top: 12px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 1050;
+            max-width: min(72%, 480px);
+            padding: 8px 12px;
+            border-radius: 6px;
+            background: rgba(255, 255, 255, .96);
+            box-shadow: 0 1px 6px rgba(0, 0, 0, .18);
+            font: 12px/1.4 Arial, sans-serif;
+            color: #334155;
+            text-align: center;
+        }
+
+        #search-status[data-tone="ok"] {
+            background: #ecfdf5;
+            color: #047857;
+            border: 1px solid #a7f3d0;
+        }
+
+        #search-status[data-tone="error"] {
+            background: #fef2f2;
+            color: #b91c1c;
+            border: 1px solid #fecaca;
+        }
+
+        #search-status[hidden] {
+            display: none;
+        }
+
+        .ban-search-marker span {
+            position: relative;
+            display: block;
+            width: 22px;
+            height: 22px;
+            margin: 2px auto 0;
+            border-radius: 50% 50% 50% 0;
+            transform: rotate(-45deg);
+            background: #e11d48;
+            border: 2px solid #fff;
+            box-shadow: 0 1px 4px rgba(0, 0, 0, .4);
+        }
+
+        .ban-search-marker span::after {
+            content: "";
+            position: absolute;
+            inset: 6px;
+            border-radius: 50%;
+            background: #fff;
+        }
+
+        .ban-search-popup strong {
+            display: block;
+            font: 600 12px/1.35 Arial, sans-serif;
+            color: #0f172a;
+        }
+
+        .ban-search-detail {
+            margin-top: 2px;
+            font: 11px/1.35 Arial, sans-serif;
+            color: #475569;
+        }
+
+        .ban-search-coords {
+            margin-top: 2px;
+            font: 11px/1.3 ui-monospace, Consolas, monospace;
+            color: #64748b;
+        }
     </style>
 </head>
 <body>
@@ -56,6 +130,7 @@
     </div>
 
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://cdn.maptiler.com/maptiler-geocoding-control/v3.1.0/leaflet.umd.js"></script>
     <script src="https://unpkg.com/@geoman-io/leaflet-geoman-free/dist/leaflet-geoman.min.js"></script>
 
     <script>
@@ -64,9 +139,9 @@
         const GEOJSON_FIELD = "BANCoordenadas";
         // MapTiler Streets ofrece una capa vial detallada y CDN. La clave debe
         // limitarse al origen que sirve este iframe (p. ej. kberdiales.github.io).
-        const MAPTILER_API_KEY = "REEMPLAZAR_CON_API_KEY_MAPTILER";
+        const MAPTILER_API_KEY = "hXjIz6qVSNRoIyA5iv2i";
         const USE_MAPTILER = MAPTILER_API_KEY &&
-            MAPTILER_API_KEY !== "REEMPLAZAR_CON_API_KEY_MAPTILER";
+            MAPTILER_API_KEY !== "hXjIz6qVSNRoIyA5iv2i";
 
         const map = L.map("map", {
             preferCanvas: true,
@@ -177,19 +252,12 @@
                 "[Creatio GeoJSON] Configura MAPTILER_API_KEY para usar MapTiler Streets en producción. " +
                 "El fallback de OpenStreetMap estándar es solo para pruebas y está sujeto a su política de uso."
             );
-						   
         }
-					 
 
         // Evita tamaños incorrectos al abrir o redimensionar la pestaña de Creatio.
         if (typeof ResizeObserver !== "undefined") {
             const mapResizeObserver = new ResizeObserver(() => {
                 map.invalidateSize({ pan: false, animate: false });
-									
-										   
-				 
-																				
-					 
             });
             mapResizeObserver.observe(document.getElementById("map"));
         }
@@ -207,6 +275,298 @@
             dragMode: true,
             removalMode: true
         });
+
+        /* =====================================================================
+         * BÚSQUEDA CON AUTOCOMPLETADO — MapTiler Geocoding Control
+         * - Sugerencias mientras se escribe (debounce + minLength).
+         * - Al elegir una sugerencia: pin propio + encuadre del mapa.
+         * - El pin vive en `searchLayer`, NUNCA en `currentLayer`:
+         *   serializeCurrentGeoJson() no lo ve y BANCoordenadas no cambia.
+         * ===================================================================== */
+
+        const SEARCH_CONFIG = {
+            apiKey: MAPTILER_API_KEY,
+            language: "es",
+            country: "pa",              // "pa" | "" (mundial) | ["pa","cr"]
+            limit: 5,
+            minLength: 2,
+            debounceSearch: 300,        // ms entre pausas de escritura y consulta
+            maxZoom: 17,                // evita zoom excesivo en POI
+            fitPadding: [28, 28],
+            position: "topright",       // Geoman usa topleft: no se solapan
+            biasToMapCenter: true,      // prioriza resultados cerca del encuadre
+            types: null                 // null = todos; p. ej. ["address","poi","place"]
+        };
+
+        const searchLayer = L.layerGroup().addTo(map);
+        let geocodingControl = null;
+        let searchStatusTimer = null;
+
+        const searchStatusEl = (() => {
+            const element = document.createElement("div");
+            element.id = "search-status";
+            element.setAttribute("role", "status");
+            element.setAttribute("aria-live", "polite");
+            element.hidden = true;
+            document.body.appendChild(element);
+            return element;
+        })();
+
+        function setSearchStatus(text, tone) {
+            if (!searchStatusEl) return;
+            if (searchStatusTimer) {
+                clearTimeout(searchStatusTimer);
+                searchStatusTimer = null;
+            }
+            if (!text) {
+                searchStatusEl.hidden = true;
+                searchStatusEl.textContent = "";
+                return;
+            }
+            searchStatusEl.hidden = false;
+            searchStatusEl.textContent = text;
+            searchStatusEl.dataset.tone = tone || "info";
+            if (tone === "ok") {
+                searchStatusTimer = setTimeout(() => setSearchStatus(""), 3500);
+            }
+        }
+
+        function escapeSearchHtml(value) {
+            return String(value === null || value === undefined ? "" : value)
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;")
+                .replace(/"/g, "&quot;")
+                .replace(/'/g, "&#39;");
+        }
+
+        const searchPinIcon = L.divIcon({
+            className: "ban-search-marker",
+            html: "<span aria-hidden=\"true\"></span>",
+            iconSize: [26, 34],
+            iconAnchor: [13, 34],
+            popupAnchor: [0, -30]
+        });
+
+        function featureLabel(feature) {
+            if (!feature) return "Ubicación sin nombre";
+            return feature.text || feature.place_name || "Ubicación sin nombre";
+        }
+
+        // MapTiler devuelve bbox = [minX, minY, maxX, maxY] → [oeste, sur, este, norte]
+        function featureBounds(feature) {
+            const bbox = feature && feature.bbox;
+            if (!Array.isArray(bbox) || bbox.length !== 4 || !bbox.every(Number.isFinite)) {
+                return null;
+            }
+            const bounds = L.latLngBounds([bbox[1], bbox[0]], [bbox[3], bbox[2]]);
+            return bounds.isValid() ? bounds : null;
+        }
+
+        // Único punto que mueve la cámara tras una búsqueda.
+        // No toca currentLayer, no llama a enviarGeoJson().
+        function selectLocation(feature) {
+            if (!feature || !Array.isArray(feature.center) || feature.center.length < 2) {
+                setSearchStatus("El resultado no tiene coordenadas válidas.", "error");
+                return false;
+            }
+
+            const lng = Number(feature.center[0]);
+            const lat = Number(feature.center[1]);
+
+            if (!Number.isFinite(lat) || !Number.isFinite(lng) ||
+                Math.abs(lat) > 90 || Math.abs(lng) > 180) {
+                setSearchStatus("El resultado no tiene coordenadas válidas.", "error");
+                return false;
+            }
+
+            const center = L.latLng(lat, lng);
+            searchLayer.clearLayers();
+
+            const marker = L.marker(center, {
+                icon: searchPinIcon,
+                keyboard: false,
+                pmIgnore: true,          // Geoman no lo edita ni lo elimina
+                zIndexOffset: 1000,
+                riseOnHover: true
+            }).addTo(searchLayer);
+
+            const detail = feature.place_name && feature.place_name !== feature.text
+                ? "<div class=\"ban-search-detail\">" + escapeSearchHtml(feature.place_name) + "</div>"
+                : "";
+
+            marker.bindPopup(
+                "<div class=\"ban-search-popup\">" +
+                "<strong>" + escapeSearchHtml(featureLabel(feature)) + "</strong>" +
+                detail +
+                "<div class=\"ban-search-coords\">" +
+                lat.toFixed(6) + ", " + lng.toFixed(6) +
+                "</div></div>",
+                { autoPan: true, closeButton: true, maxWidth: 320 }
+            );
+            marker.openPopup();
+
+            const bounds = featureBounds(feature);
+            const isSinglePoint = !bounds ||
+                (Math.abs(bounds.getNorth() - bounds.getSouth()) < 1e-9 &&
+                 Math.abs(bounds.getEast() - bounds.getWest()) < 1e-9);
+
+            if (isSinglePoint) {
+                map.setView(center, Math.max(map.getZoom(), 16), { animate: false });
+            } else {
+                map.fitBounds(bounds, {
+                    padding: SEARCH_CONFIG.fitPadding,
+                    maxZoom: SEARCH_CONFIG.maxZoom,
+                    animate: false
+                });
+            }
+
+            setSearchStatus("Ubicación: " + featureLabel(feature), "ok");
+            console.info("[Creatio GeoJSON] Ubicación seleccionada", {
+                text: feature.text,
+                placeName: feature.place_name,
+                placeType: feature.place_type,
+                center: { lat, lng },
+                geoJsonAffected: false
+            });
+
+            // Puente opcional para un campo de búsqueda en la página Freedom UI.
+            postToCreatio({
+                type: "location_search_result",
+                action: "search",
+                found: true,
+                name: featureLabel(feature),
+                latitude: lat,
+                longitude: lng
+            });
+
+            return true;
+        }
+
+        function initLocationSearch() {
+            const api = window.maptilerGeocoder;
+
+            if (!api || typeof api.GeocodingControl !== "function") {
+                console.warn(
+                    "[Creatio GeoJSON] MapTiler Geocoding Control no está disponible; " +
+                    "el mapa continúa sin buscador."
+                );
+                return null;
+            }
+
+            if (!SEARCH_CONFIG.apiKey ||
+                SEARCH_CONFIG.apiKey === "hXjIz6qVSNRoIyA5iv2i") {
+                console.warn("[Creatio GeoJSON] Define MAPTILER_API_KEY para habilitar la búsqueda.");
+                setSearchStatus("Configura la clave de MapTiler para habilitar la búsqueda.", "error");
+                return null;
+            }
+
+            geocodingControl = new api.GeocodingControl({
+                apiKey: SEARCH_CONFIG.apiKey,
+                position: SEARCH_CONFIG.position,
+                placeholder: "Buscar dirección, lugar o punto de interés…",
+                language: SEARCH_CONFIG.language,
+                country: SEARCH_CONFIG.country || undefined,
+                types: SEARCH_CONFIG.types || undefined,
+                limit: SEARCH_CONFIG.limit,
+                minLength: SEARCH_CONFIG.minLength,
+                debounceSearch: SEARCH_CONFIG.debounceSearch,
+
+                /* --- Autocompletado --- */
+                showResultsWhileTyping: true,   // envía autocomplete=true a la API
+                selectFirst: true,              // Enter acepta la primera sugerencia
+                clearListOnPick: true,
+                showPlaceType: "if-needed",
+                proximity: SEARCH_CONFIG.biasToMapCenter
+                    ? [{ type: "map-center" }]
+                    : null,
+
+                /* --- Cámara y pin bajo nuestro control --- */
+                marker: false,
+                showResultMarkers: false,
+                markerOnSelected: false,
+                flyTo: false,
+                flyToSelected: false,
+                flyToFeatures: "never",
+                fullGeometryStyle: false,
+                pickedResultStyle: "marker-only",
+
+                /* --- Mensajes en español --- */
+                noResultsMessage:
+                    "Sin resultados. Prueba con otra dirección o un punto de referencia.",
+                errorMessage: "No se pudo consultar el servicio de búsqueda."
+            });
+
+            // `pick` = el usuario eligió una sugerencia.
+            // (`select` se dispara al resaltar una fila; no debe mover el mapa.)
+            geocodingControl.on("pick", event => {
+                if (!event || !event.feature) return;
+                selectLocation(event.feature);
+            });
+
+            geocodingControl.on("featureslisted", event => {
+                console.debug(
+                    "[Creatio GeoJSON] Sugerencias recibidas:",
+                    (event && event.features ? event.features.length : 0)
+                );
+            });
+
+            map.addControl(geocodingControl);
+
+            // Evita que el teclado del buscador active atajos del mapa o de Geoman
+            // (p. ej. Enter no debe finalizar un polígono en dibujo).
+            const container = typeof geocodingControl.getContainer === "function"
+                ? geocodingControl.getContainer()
+                : null;
+
+            if (container) {
+                L.DomEvent.disableClickPropagation(container);
+                L.DomEvent.disableScrollPropagation(container);
+                ["keydown", "keyup", "keypress"].forEach(type => {
+                    container.addEventListener(type, event => event.stopPropagation());
+                });
+            }
+
+            console.info("[Creatio GeoJSON] Búsqueda con autocompletado lista", {
+                provider: "MapTiler Geocoding",
+                autocomplete: true,
+                country: SEARCH_CONFIG.country || "(mundial)",
+                geoJsonAffected: false
+            });
+
+            return geocodingControl;
+        }
+
+        // Puente opcional: buscar desde un input de la página Freedom UI.
+        // El usuario elige de la lista del mapa; el resultado se reporta en selectLocation().
+        function searchFromParent(query, requestId) {
+            if (!geocodingControl) {
+                postToCreatio({
+                    type: "location_search_result",
+                    action: "search",
+                    requestId: requestId || null,
+                    found: false,
+                    message: "El buscador no está disponible."
+                });
+                return;
+            }
+
+            const value = String(query || "").trim();
+            if (value.length < SEARCH_CONFIG.minLength) {
+                postToCreatio({
+                    type: "location_search_result",
+                    action: "search",
+                    requestId: requestId || null,
+                    found: false,
+                    message: "Escribe al menos " + SEARCH_CONFIG.minLength + " caracteres."
+                });
+                return;
+            }
+
+            geocodingControl.focus();
+            geocodingControl.setQuery(value);
+            geocodingControl.submitQuery(value);
+        }
 
         function isObject(value) {
             return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -500,10 +860,10 @@
         function geometryTypeForGeoJson(geojson) {
             const features = getFeatures(geojson);
             if (features.length !== 1 || !features[0].geometry) return "MULTIPLE";
-        
+
             const feature = features[0];
             const zoneType = String((feature.properties || {}).zoneType || "").toUpperCase();
-        
+
             if (feature.geometry.type === "Polygon") return "POLYGON";
             if (feature.geometry.type === "Point") return zoneType === "CIRCLE" ? "CIRCLE" : "POINT";
             return feature.geometry.type.toUpperCase();
@@ -517,7 +877,7 @@
             }
 
             const serialized = JSON.stringify(geojson);
-            console.log("[Creatio GeoJSON] Geometría lista para BANGeoJson", geojson);
+            console.log("[Creatio GeoJSON] Geometría lista para BANCoordenadas", geojson);
 
             postToCreatio({
                 type: messageTypeForGeoJson(geojson),
@@ -641,7 +1001,7 @@
 
             const parsed = parseCreatioGeoJson(rawValue);
             if (parsed.empty) {
-                console.info("[Creatio GeoJSON] Campo BANGeoJson vacío; se muestra el mapa sin geometría.");
+                console.info("[Creatio GeoJSON] Campo BANCoordenadas vacío; se muestra el mapa sin geometría.");
                 initialDataReceived = true;
                 if (initialRequestTimer) {
                     clearInterval(initialRequestTimer);
@@ -670,6 +1030,16 @@
             }
             console.debug("[Creatio GeoJSON] GeoJSON validado; coordenadas de entrada [longitud, latitud].", parsed.value);
             renderGeoJson(parsed.value);
+        });
+
+        // Puente opcional: búsqueda solicitada desde un input de la página Freedom UI.
+        // No interfiere con el listener de load_polygon/load_geojson.
+        window.addEventListener("message", event => {
+            if (event.source !== window.parent) return;
+            if (!isObject(event.data) || event.data.type !== "search_location") return;
+            if (CREATIO_ORIGIN !== "*" && event.origin !== CREATIO_ORIGIN) return;
+
+            searchFromParent(event.data.query, event.data.requestId);
         });
 
         function attachLayerListeners(layerOrGroup) {
@@ -709,11 +1079,11 @@
             enviarGeoJson();
         });
 
-        // Al borrar una geometría administrada se limpia BANGeoJson en Creatio.
+        // Al borrar una geometría administrada se limpia BANCoordenadas en Creatio.
         map.on("pm:remove", event => {
             if (clearingLayers || !currentLayer || !containsLayer(currentLayer, event.layer)) return;
 
-            console.info("[Creatio GeoJSON] Geometría eliminada desde Geoman; se limpiará BANGeoJson.");
+            console.info("[Creatio GeoJSON] Geometría eliminada desde Geoman; se limpiará BANCoordenadas.");
             clearCurrentLayer();
             notifyCreatioToClear();
             resetMapView();
@@ -741,6 +1111,12 @@
                 type: "get_polygon",
                 fieldName: GEOJSON_FIELD
             });
+        }
+
+        try {
+            initLocationSearch();
+        } catch (error) {
+            console.warn("[Creatio GeoJSON] La búsqueda no se pudo inicializar:", error);
         }
 
         requestInitialGeoJson();
