@@ -121,6 +121,118 @@
             font: 11px/1.3 ui-monospace, Consolas, monospace;
             color: #64748b;
         }
+
+        /* --- Capas base, medición y ayuda --------------------------------- */
+        .leaflet-control-layers {
+            border-radius: 8px;
+            box-shadow: 0 1px 6px rgba(0, 0, 0, .18);
+            font: 12px/1.4 Arial, sans-serif;
+        }
+
+        .ban-metrics {
+            display: flex;
+            align-items: baseline;
+            gap: 10px;
+            flex-wrap: wrap;
+            padding: 6px 10px;
+            border-radius: 8px;
+            background: rgba(255, 255, 255, .96);
+            box-shadow: 0 1px 6px rgba(0, 0, 0, .18);
+            font: 11px/1.35 Arial, sans-serif;
+            color: #334155;
+        }
+
+        .ban-metrics strong {
+            font-size: 10px;
+            font-weight: 700;
+            letter-spacing: .07em;
+            text-transform: uppercase;
+            color: #0f172a;
+        }
+
+        .ban-metrics span {
+            white-space: nowrap;
+        }
+
+        .ban-metrics i {
+            font-style: normal;
+            margin-right: 3px;
+            color: #64748b;
+        }
+
+        .ban-metrics-empty {
+            color: #94a3b8;
+        }
+
+        .ban-center-button {
+            width: 30px;
+            height: 30px;
+            padding: 0;
+            border: 1px solid #d7dde5;
+            border-radius: 6px;
+            background: #fff;
+            color: #1e293b;
+            font-size: 16px;
+            line-height: 1;
+            cursor: pointer;
+            box-shadow: 0 1px 6px rgba(0, 0, 0, .18);
+        }
+
+        .ban-center-button:hover {
+            background: #f1f5f9;
+        }
+
+        #map-hint {
+            position: absolute;
+            left: 50%;
+            bottom: 18px;
+            transform: translateX(-50%);
+            z-index: 1040;
+            max-width: min(80%, 560px);
+            padding: 7px 12px;
+            border-radius: 999px;
+            background: rgba(15, 23, 42, .82);
+            color: #f8fafc;
+            font: 11px/1.35 Arial, sans-serif;
+            text-align: center;
+            cursor: pointer;
+            transition: opacity .35s ease, transform .35s ease;
+        }
+
+        #map-hint.is-hidden {
+            opacity: 0;
+            transform: translate(-50%, 8px);
+            pointer-events: none;
+        }
+
+        /* El buscador es un web component: se ajusta con sus CSS custom properties. */
+        .leaflet-ctrl-geocoder.leaflet-bar {
+            border: 0;
+            background: transparent;
+            box-shadow: none;
+        }
+
+        .leaflet-ctrl-geocoder maptiler-geocoder {
+            --size-width: 320px;
+            --size-input-min-height: 38px;
+            --radius: 10px;
+            --radius-dropdown: 10px;
+            --radius-input-group: 10px;
+            --shadow: 0 4px 16px rgba(15, 23, 42, .18);
+            --shadow-dropdown: 0 10px 28px rgba(15, 23, 42, .18);
+            --font-family: "Segoe UI", "Open Sans", "Helvetica Neue", Arial, sans-serif;
+            --font-size-input: 13px;
+            --font-size-items: 13px;
+            --color-items-selected-bg: #eef2ff;
+            --color-items-selected: #1d4ed8;
+            --color-focus-outline: #2563eb;
+        }
+
+        @media (max-width: 560px) {
+            .leaflet-ctrl-geocoder maptiler-geocoder {
+                --size-width: 220px;
+            }
+        }
     </style>
 </head>
 <body>
@@ -320,6 +432,22 @@
             removalMode: true
         });
 
+        // Endurece el dibujo: sin auto-intersecciones (el API rechaza esos polígonos),
+        // con snapping a vértices existentes y sin encadenar dibujos.
+        map.pm.setGlobalOptions({
+            allowSelfIntersection: false,
+            snappable: true,
+            snapDistance: 20,
+            continueDrawing: false
+        });
+
+        // Interfaz de Geoman en español (si el idioma no está disponible, queda en inglés).
+        try {
+            map.pm.setLang("es");
+        } catch (error) {
+            console.warn("[Creatio GeoJSON] Geoman no tiene traducción 'es'; se mantiene el idioma por defecto.");
+        }
+
         /* =====================================================================
          * BÚSQUEDA CON AUTOCOMPLETADO — MapTiler Geocoding Control
          * - Sugerencias mientras se escribe (debounce + minLength).
@@ -343,6 +471,8 @@
         };
 
         const searchLayer = L.layerGroup().addTo(map);
+        // Resalte del área encontrada: capa aparte, nunca entra en el GeoJSON.
+        const searchHighlight = L.layerGroup().addTo(map);
         let geocodingControl = null;
         let searchStatusTimer = null;
 
@@ -407,6 +537,29 @@
             return bounds.isValid() ? bounds : null;
         }
 
+        // Resalta el área del resultado (solo referencia visual; no es una geocerca).
+        function highlightSearchArea(bounds, isSinglePoint) {
+            searchHighlight.clearLayers();
+            if (!bounds || isSinglePoint) return;
+
+            const southWest = bounds.getSouthWest();
+            const northEast = bounds.getNorthEast();
+            if (Math.abs(northEast.lat - southWest.lat) < 1e-6 &&
+                Math.abs(northEast.lng - southWest.lng) < 1e-6) {
+                return;
+            }
+
+            L.rectangle(bounds, {
+                color: "#2563eb",
+                weight: 1,
+                dashArray: "4 4",
+                fill: true,
+                fillOpacity: 0.06,
+                interactive: false,
+                pmIgnore: true
+            }).addTo(searchHighlight);
+        }
+
         // Único punto que mueve la cámara tras una búsqueda.
         // No toca currentLayer, no llama a enviarGeoJson().
         function selectLocation(feature) {
@@ -465,6 +618,8 @@
                 });
             }
 
+            highlightSearchArea(bounds, isSinglePoint);
+
             setSearchStatus("Ubicación: " + featureLabel(feature), "ok");
             console.info("[Creatio GeoJSON] Ubicación seleccionada", {
                 text: feature.text,
@@ -519,7 +674,7 @@
                 showResultsWhileTyping: true,   // envía autocomplete=true a la API
                 selectFirst: true,              // Enter acepta la primera sugerencia
                 clearListOnPick: true,
-                showPlaceType: "if-needed",
+                showPlaceType: "always",
                 proximity: SEARCH_CONFIG.biasToMapCenter
                     ? [{ type: "map-center" }]
                     : null,
@@ -611,6 +766,229 @@
             geocodingControl.setQuery(value);
             geocodingControl.submitQuery(value);
         }
+
+        /* =====================================================================
+         * UI DEL MAPA — capas base, escala, medición en vivo y ayuda
+         * Solo lectura: no altera currentLayer ni el GeoJSON.
+         * ===================================================================== */
+
+        function createMaptilerLayer(styleId) {
+            return L.tileLayer(
+                `https://api.maptiler.com/maps/${styleId}/{z}/{x}/{y}.png?key=${encodeURIComponent(MAPTILER_API_KEY)}`,
+                {
+                    tileSize: 512,
+                    zoomOffset: -1,
+                    minZoom: 1,
+                    maxZoom: 21,
+                    maxNativeZoom: 21,
+                    crossOrigin: true,
+                    updateWhenIdle: true,
+                    keepBuffer: 2,
+                    attribution: MAPTILER_ATTRIBUTION
+                }
+            );
+        }
+
+        function createCartoLayer(styleId) {
+            return L.tileLayer(
+                `https://{s}.basemaps.cartocdn.com/${styleId}/{z}/{x}/{y}{r}.png`,
+                {
+                    subdomains: "abcd",
+                    minZoom: 1,
+                    maxZoom: 20,
+                    updateWhenIdle: true,
+                    keepBuffer: 2,
+                    attribution: CARTO_ATTRIBUTION
+                }
+            );
+        }
+
+        // Las capas alternativas se descargan solo cuando el usuario las elige.
+        const baseLayers = {};
+        if (IS_LOCAL_DEV) {
+            baseLayers["Calles"] = basemap;
+            baseLayers["Claro"] = createCartoLayer("light_all");
+        } else if (USE_MAPTILER) {
+            baseLayers["Calles"] = basemap;
+            baseLayers["Satélite"] = createMaptilerLayer("hybrid");
+            baseLayers["Claro"] = createMaptilerLayer("dataviz-light");
+        }
+
+        // El selector de capas se agrega al final para que quede debajo del buscador.
+        function addBaseLayersControl() {
+            if (Object.keys(baseLayers).length < 2) return;
+
+            L.control.layers(baseLayers, null, {
+                position: "topright",
+                collapsed: true,
+                sortLayers: false
+            }).addTo(map);
+        }
+
+        // Escala métrica: útil para dimensionar radios y áreas.
+        L.control.scale({
+            imperial: false,
+            position: "bottomleft",
+            maxWidth: 110
+        }).addTo(map);
+
+        // Medición en vivo de la geocerca administrada.
+        const MetricsControl = L.Control.extend({
+            options: { position: "bottomleft" },
+            onAdd() {
+                const container = L.DomUtil.create("div", "ban-metrics");
+                L.DomEvent.disableClickPropagation(container);
+                this._container = container;
+                this.update(null);
+                return container;
+            },
+            update(html) {
+                if (!this._container) return;
+                this._container.innerHTML = html ||
+                    '<span class="ban-metrics-empty">Sin geocerca</span>';
+            }
+        });
+
+        const metricsControl = new MetricsControl().addTo(map);
+
+        // Vuelve a encuadrar la geocerca administrada.
+        const CenterZoneControl = L.Control.extend({
+            options: { position: "bottomright" },
+            onAdd() {
+                const button = L.DomUtil.create("button", "leaflet-control ban-center-button");
+                button.type = "button";
+                button.title = "Centrar en la geocerca";
+                button.setAttribute("aria-label", "Centrar en la geocerca");
+                button.textContent = "◎";
+                L.DomEvent.disableClickPropagation(button);
+                L.DomEvent.on(button, "click", centerOnZone);
+                return button;
+            }
+        });
+
+        new CenterZoneControl().addTo(map);
+
+        function centerOnZone() {
+            if (!currentLayer) {
+                setSearchStatus("Todavía no hay una geocerca dibujada en el mapa.", "error");
+                return;
+            }
+
+            const bounds = currentLayer.getBounds();
+            if (!bounds || !bounds.isValid()) return;
+
+            map.fitBounds(bounds, {
+                padding: SEARCH_CONFIG.fitPadding,
+                maxZoom: 18,
+                animate: false
+            });
+        }
+
+        function formatArea(squareMeters) {
+            if (!Number.isFinite(squareMeters) || squareMeters <= 0) return "—";
+            if (squareMeters >= 1e6) return (squareMeters / 1e6).toFixed(2) + " km²";
+            if (squareMeters >= 1e4) return (squareMeters / 1e4).toFixed(2) + " ha";
+            return Math.round(squareMeters).toLocaleString("es-PA") + " m²";
+        }
+
+        function formatLength(meters) {
+            if (!Number.isFinite(meters)) return "—";
+            return meters >= 1000
+                ? (meters / 1000).toFixed(2) + " km"
+                : Math.round(meters).toLocaleString("es-PA") + " m";
+        }
+
+        // Área esférica (misma fórmula que Leaflet.GeometryUtil) y perímetro geodésico.
+        function geodesicRingArea(points) {
+            const earthRadius = 6378137;
+            let total = 0;
+            for (let index = 0; index < points.length; index++) {
+                const current = points[index];
+                const next = points[(index + 1) % points.length];
+                total += (next.lng - current.lng) * Math.PI / 180 *
+                    (2 + Math.sin(current.lat * Math.PI / 180) + Math.sin(next.lat * Math.PI / 180));
+            }
+            return total * earthRadius * earthRadius / 2;
+        }
+
+        function geodesicRingPerimeter(points) {
+            let total = 0;
+            for (let index = 0; index < points.length; index++) {
+                total += map.distance(points[index], points[(index + 1) % points.length]);
+            }
+            return total;
+        }
+
+        function refreshMetrics() {
+            if (!metricsControl) return;
+
+            const layers = [];
+            collectLeafLayers(currentLayer, layers);
+
+            if (layers.length === 0) {
+                metricsControl.update(null);
+                return;
+            }
+
+            const circle = layers.length === 1 && layers[0] instanceof L.Circle
+                ? layers[0]
+                : null;
+
+            if (circle) {
+                const radius = circle.getRadius();
+                metricsControl.update(
+                    "<strong>Círculo</strong>" +
+                    "<span><i>Radio</i>" + formatLength(radius) + "</span>" +
+                    "<span><i>Área</i>" + formatArea(Math.PI * radius * radius) + "</span>"
+                );
+                return;
+            }
+
+            let area = 0;
+            let perimeter = 0;
+
+            layers.forEach(layer => {
+                if (typeof layer.getLatLngs !== "function") return;
+                const rings = layer.getLatLngs();
+                if (!Array.isArray(rings)) return;
+
+                rings.forEach((ring, index) => {
+                    if (!Array.isArray(ring) || ring.length < 3) return;
+
+                    const points = ring
+                        .filter(point => point && Number.isFinite(point.lat) && Number.isFinite(point.lng))
+                        .map(point => L.latLng(point.lat, point.lng));
+
+                    if (points.length < 3) return;
+
+                    const ringArea = Math.abs(geodesicRingArea(points));
+                    area += index === 0 ? ringArea : -ringArea;
+                    if (index === 0) perimeter += geodesicRingPerimeter(points);
+                });
+            });
+
+            metricsControl.update(
+                "<strong>" + (layers.length > 1 ? "Geometría" : "Polígono") + "</strong>" +
+                "<span><i>Área</i>" + formatArea(Math.max(area, 0)) + "</span>" +
+                "<span><i>Perímetro</i>" + formatLength(perimeter) + "</span>"
+            );
+        }
+
+        // Ayuda breve: se oculta sola, al hacer clic o al dibujar la primera geocerca.
+        (function showMapHint() {
+            const hint = document.createElement("div");
+            hint.id = "map-hint";
+            hint.setAttribute("role", "note");
+            hint.textContent =
+                "Dibuja un polígono, rectángulo o círculo con la barra de la izquierda. " +
+                "Arrastra el mapa para moverlo.";
+            document.body.appendChild(hint);
+
+            const hide = () => hint.classList.add("is-hidden");
+            setTimeout(hide, 9000);
+            map.once("pm:create", hide);
+            hint.addEventListener("click", hide);
+        })();
 
         function isObject(value) {
             return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -935,6 +1313,7 @@
         function clearCurrentLayer() {
             if (!currentLayer) {
                 currentWasFeatureCollection = false;
+                refreshMetrics();
                 return;
             }
 
@@ -954,6 +1333,8 @@
             } finally {
                 clearingLayers = false;
             }
+
+            refreshMetrics();
         }
 
         function notifyCreatioToClear() {
@@ -990,11 +1371,13 @@
             if (nextLayers.length === 0) {
                 console.warn("[Creatio GeoJSON] GeoJSON válido, pero no contiene geometrías dibujables.");
                 resetMapView();
+                refreshMetrics();
                 return true;
             }
 
             currentLayer = L.featureGroup(nextLayers).addTo(map);
             attachLayerListeners(currentLayer);
+            refreshMetrics();
 
             const bounds = currentLayer.getBounds();
             console.log("[Creatio GeoJSON] Geometría cargada; bounds:", bounds);
@@ -1092,8 +1475,14 @@
 
             layers.forEach(layer => {
                 if (layer.pm) layer.pm.enable();
-                layer.on("pm:edit", enviarGeoJson);
-                layer.on("pm:dragend", enviarGeoJson);
+                layer.on("pm:edit", () => {
+                    enviarGeoJson();
+                    refreshMetrics();
+                });
+                layer.on("pm:dragend", () => {
+                    enviarGeoJson();
+                    refreshMetrics();
+                });
             });
         }
 
@@ -1121,6 +1510,7 @@
             if (!map.hasLayer(layer)) layer.addTo(map);
             attachLayerListeners(layer);
             enviarGeoJson();
+            refreshMetrics();
         });
 
         // Al borrar una geometría administrada se limpia BANCoordenadas en Creatio.
@@ -1162,6 +1552,8 @@
         } catch (error) {
             console.warn("[Creatio GeoJSON] La búsqueda no se pudo inicializar:", error);
         }
+
+        addBaseLayersControl();
 
         if (isEmbedded()) {
             requestInitialGeoJson();
