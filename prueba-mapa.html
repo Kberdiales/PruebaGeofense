@@ -8,7 +8,6 @@
 
     <!-- Reduce el tiempo de conexión a recursos externos. -->
     <link rel="preconnect" href="https://api.maptiler.com" crossorigin>
-    <link rel="preconnect" href="https://tile.openstreetmap.org" crossorigin>
     <link rel="preconnect" href="https://unpkg.com" crossorigin>
     <link rel="preconnect" href="https://cdn.maptiler.com" crossorigin>
 
@@ -140,8 +139,13 @@
         // MapTiler Streets ofrece una capa vial detallada y CDN. La clave debe
         // limitarse al origen que sirve este iframe (p. ej. kberdiales.github.io).
         const MAPTILER_API_KEY = "hXjIz6qVSNRoIyA5iv2i";
-        const USE_MAPTILER = MAPTILER_API_KEY &&
-            MAPTILER_API_KEY !== "hXjIz6qVSNRoIyA5iv2i";
+        // Una key "presente" es la única condición. No se compara contra un
+        // literal: así un find/replace de la key no desactiva el mapa ni el buscador.
+        const USE_MAPTILER = MAPTILER_API_KEY.length > 0;
+        // Desarrollo local: único caso donde se permite otra capa base (CARTO).
+        const IS_LOCAL_DEV = location.protocol === "file:" ||
+            ["localhost", "127.0.0.1"].includes(location.hostname);
+        const DEBUG = false;
 
         const map = L.map("map", {
             preferCanvas: true,
@@ -158,53 +162,80 @@
         let basemapLoadTimeout = null;
         let basemapTileErrors = 0;
 
-        const basemap = USE_MAPTILER
-            ? L.tileLayer(
-                `https://api.maptiler.com/maps/streets-v4/{z}/{x}/{y}.png?key=${encodeURIComponent(MAPTILER_API_KEY)}`,
-                {
-                    tileSize: 512,
-                    zoomOffset: -1,
-                    minZoom: 1,
-                    maxZoom: 21,
-                    maxNativeZoom: 21,
-                    crossOrigin: true,
-                    updateWhenIdle: true,
-                    keepBuffer: 2,
-                    attribution: '<a href="https://www.maptiler.com/copyright/" target="_blank" rel="noopener">© MapTiler</a> <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">© OpenStreetMap contributors</a>'
-                }
-            )
-            : L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+        const MAPTILER_ATTRIBUTION =
+            '<a href="https://www.maptiler.com/copyright/" target="_blank" rel="noopener">© MapTiler</a> ' +
+            '<a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">© OpenStreetMap contributors</a>';
+
+        const CARTO_ATTRIBUTION =
+            '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors ' +
+            '&copy; <a href="https://carto.com/attributions" target="_blank" rel="noopener">CARTO</a>';
+
+        // Capas base permitidas:
+        //  - CARTO en localhost/file: (desarrollo). Se prioriza para que el mapa
+        //    siempre renderice aunque la key esté restringida a otro dominio.
+        //  - MapTiler cuando hay key (producción).
+        //  - Ninguna en cualquier otro caso: NO se usan los servidores voluntarios
+        //    de OpenStreetMap desde una aplicación (política de uso de la OSMF).
+        const basemap = IS_LOCAL_DEV
+            ? L.tileLayer("https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png", {
+                subdomains: "abcd",
                 minZoom: 1,
-                maxZoom: 19,
+                maxZoom: 20,
                 updateWhenIdle: true,
                 keepBuffer: 2,
-                attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap contributors</a>'
-            });
+                attribution: CARTO_ATTRIBUTION
+            })
+            : USE_MAPTILER
+                ? L.tileLayer(
+                    `https://api.maptiler.com/maps/streets-v4/{z}/{x}/{y}.png?key=${encodeURIComponent(MAPTILER_API_KEY)}`,
+                    {
+                        tileSize: 512,
+                        zoomOffset: -1,
+                        minZoom: 1,
+                        maxZoom: 21,
+                        maxNativeZoom: 21,
+                        crossOrigin: true,
+                        updateWhenIdle: true,
+                        keepBuffer: 2,
+                        attribution: MAPTILER_ATTRIBUTION
+                    }
+                )
+                : null;
 
         function addBasemap() {
-            if (!basemapAdded) {
+            if (basemapAdded) return;
+
+            if (!basemap) {
+                map.getContainer().style.background = "#eef2f4";
                 if (mapStatus) {
                     mapStatus.hidden = false;
-                    mapStatus.textContent = "Cargando mapa…";
+                    mapStatus.textContent = "Configura MAPTILER_API_KEY para mostrar el mapa base.";
                 }
-                basemap.on("load", hideMapStatus);
-                basemap.on("tileerror", () => {
-                    basemapTileErrors++;
-                    if (basemapTileErrors >= 3 && mapStatus) {
-                        mapStatus.hidden = false;
-                        mapStatus.textContent = USE_MAPTILER
-                            ? "No se pudieron cargar las teselas. Revisa la clave de MapTiler y su restricción de dominio."
-                            : "No se pudieron cargar las teselas. Revisa la conexión de red.";
-                    }
-                });
-                basemap.addTo(map);
                 basemapAdded = true;
-                basemapLoadTimeout = setTimeout(() => {
-                    if (mapStatus && !mapStatus.hidden) {
-                        mapStatus.textContent = "El mapa tarda en responder. Revisa la conexión o el proveedor de teselas.";
-                    }
-                }, 12000);
+                return;
             }
+
+            if (mapStatus) {
+                mapStatus.hidden = false;
+                mapStatus.textContent = "Cargando mapa…";
+            }
+            basemap.on("load", hideMapStatus);
+            basemap.on("tileerror", () => {
+                basemapTileErrors++;
+                if (basemapTileErrors >= 3 && mapStatus) {
+                    mapStatus.hidden = false;
+                    mapStatus.textContent = USE_MAPTILER
+                        ? "No se pudieron cargar las teselas. Revisa la clave de MapTiler y su restricción de dominio."
+                        : "No se pudieron cargar las teselas del mapa base de desarrollo. Revisa la conexión.";
+                }
+            });
+            basemap.addTo(map);
+            basemapAdded = true;
+            basemapLoadTimeout = setTimeout(() => {
+                if (mapStatus && !mapStatus.hidden) {
+                    mapStatus.textContent = "El mapa tarda en responder. Revisa la conexión o el proveedor de teselas.";
+                }
+            }, 12000);
         }
 
         function hideMapStatus() {
@@ -241,16 +272,29 @@
             }
         })();
 
+        // Una página abierta directamente no tiene contenedor Creatio al que preguntar.
+        function isEmbedded() {
+            try {
+                return window.parent !== window;
+            } catch (_) {
+                return false;
+            }
+        }
+
         console.log("[Creatio GeoJSON] Mapa inicializado", {
             center: PANAMA,
             fieldName: GEOJSON_FIELD,
             parentOrigin: CREATIO_ORIGIN,
-            basemap: USE_MAPTILER ? "MapTiler Streets v4" : "OpenStreetMap standard (fallback de prueba)"
+            basemap: IS_LOCAL_DEV
+                ? "CARTO Voyager (desarrollo local)"
+                : (USE_MAPTILER ? "MapTiler Streets v4" : "ninguna"),
+            embedded: isEmbedded()
         });
         if (!USE_MAPTILER) {
             console.warn(
-                "[Creatio GeoJSON] Configura MAPTILER_API_KEY para usar MapTiler Streets en producción. " +
-                "El fallback de OpenStreetMap estándar es solo para pruebas y está sujeto a su política de uso."
+                IS_LOCAL_DEV
+                    ? "[Creatio GeoJSON] Sin MAPTILER_API_KEY: se usa CARTO Voyager solo para desarrollo local."
+                    : "[Creatio GeoJSON] Sin MAPTILER_API_KEY: no se cargará mapa base. No se usa OpenStreetMap público."
             );
         }
 
@@ -454,8 +498,7 @@
                 return null;
             }
 
-            if (!SEARCH_CONFIG.apiKey ||
-                SEARCH_CONFIG.apiKey === "hXjIz6qVSNRoIyA5iv2i") {
+            if (!SEARCH_CONFIG.apiKey) {
                 console.warn("[Creatio GeoJSON] Define MAPTILER_API_KEY para habilitar la búsqueda.");
                 setSearchStatus("Configura la clave de MapTiler para habilitar la búsqueda.", "error");
                 return null;
@@ -505,6 +548,7 @@
             });
 
             geocodingControl.on("featureslisted", event => {
+                if (!DEBUG) return;
                 console.debug(
                     "[Creatio GeoJSON] Sugerencias recibidas:",
                     (event && event.features ? event.features.length : 0)
@@ -837,7 +881,7 @@
         }
 
         function postToCreatio(message) {
-            console.log("[Creatio GeoJSON] Enviando postMessage", message);
+            if (DEBUG) console.log("[Creatio GeoJSON] Enviando postMessage", message);
             window.parent.postMessage(message, CREATIO_ORIGIN);
         }
 
@@ -1119,8 +1163,13 @@
             console.warn("[Creatio GeoJSON] La búsqueda no se pudo inicializar:", error);
         }
 
-        requestInitialGeoJson();
-        initialRequestTimer = setInterval(requestInitialGeoJson, 400);
+        if (isEmbedded()) {
+            requestInitialGeoJson();
+            initialRequestTimer = setInterval(requestInitialGeoJson, 400);
+        } else {
+            console.info("[Creatio GeoJSON] Vista previa sin contenedor Creatio: no se solicita geometría guardada.");
+            addBasemap();
+        }
     </script>
 </body>
 </html>
