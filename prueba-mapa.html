@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="ban-map" content="BAN-GEOFENSE-MAP">
-    <title>Geofence Map - Panamá (v5)</title>
+    <title>Geofence Map - Panamá (v6)</title>
 
     <!-- Reduce el tiempo de conexión a recursos externos. -->
     <link rel="preconnect" href="https://api.maptiler.com" crossorigin>
@@ -100,6 +100,28 @@
             content: "";
             position: absolute;
             inset: 6px;
+            border-radius: 50%;
+            background: #fff;
+        }
+
+        /* Pin del punto dibujado (geocerca Point). Distinto del pin de búsqueda. */
+        .ban-point-marker span {
+            position: relative;
+            display: block;
+            width: 20px;
+            height: 20px;
+            margin: 4px auto 0;
+            border-radius: 50% 50% 50% 0;
+            transform: rotate(-45deg);
+            background: #1d4ed8;
+            border: 2px solid #fff;
+            box-shadow: 0 1px 4px rgba(0, 0, 0, .4);
+        }
+
+        .ban-point-marker span::after {
+            content: "";
+            position: absolute;
+            inset: 5px;
             border-radius: 50%;
             background: #fff;
         }
@@ -481,7 +503,7 @@
             position: "topleft",
             drawPolygon: true,
             drawRectangle: true,
-            drawMarker: false,
+            drawMarker: true,
             drawCircle: true,
             drawCircleMarker: false,
             drawPolyline: false,
@@ -996,6 +1018,20 @@
                 return;
             }
 
+            const point = layers.length === 1 && layers[0] instanceof L.Marker
+                ? layers[0]
+                : null;
+
+            if (point) {
+                const latlng = point.getLatLng();
+                metricsControl.update(
+                    "<strong>Punto</strong>" +
+                    "<span><i>Lat</i>" + latlng.lat.toFixed(6) + "</span>" +
+                    "<span><i>Lng</i>" + latlng.lng.toFixed(6) + "</span>"
+                );
+                return;
+            }
+
             let area = 0;
             let perimeter = 0;
 
@@ -1032,7 +1068,7 @@
             hint.id = "map-hint";
             hint.setAttribute("role", "note");
             hint.textContent =
-                "Dibuja un polígono, rectángulo o círculo con la barra de la izquierda. " +
+                "Dibuja un punto, polígono, rectángulo o círculo con la barra de la izquierda. " +
                 "Arrastra el mapa para moverlo.";
             document.body.appendChild(hint);
 
@@ -1230,6 +1266,27 @@
             return [{ type: "Feature", geometry: geojson, properties: {} }];
         }
 
+        // Icono propio para geocercas de tipo Point. No se usan las imágenes por
+        // defecto de Leaflet: su ruta se resuelve contra el CDN y cambia según el origen.
+        const pointPinIcon = L.divIcon({
+            className: "ban-point-marker",
+            html: "<span aria-hidden=\"true\"></span>",
+            iconSize: [22, 30],
+            iconAnchor: [11, 30],
+            popupAnchor: [0, -26]
+        });
+
+        function createPointMarker(latlng, feature) {
+            const marker = L.marker(latlng, {
+                icon: pointPinIcon,
+                draggable: true,
+                keyboard: false
+            });
+            // Conserva las propiedades del Feature cargado desde BANCoordenadas.
+            if (feature) marker.feature = feature;
+            return marker;
+        }
+
         function createLeafletLayers(feature) {
             if (!feature.geometry) return [];
 
@@ -1247,7 +1304,10 @@
                 return [circle];
             }
 
-            const geoJsonLayer = L.geoJSON(feature);
+            const geoJsonLayer = L.geoJSON(feature, {
+                // Un Point sin zoneType CIRCLE es un punto suelto: pin propio.
+                pointToLayer: (pointFeature, latlng) => createPointMarker(latlng, pointFeature)
+            });
             const layers = [];
             geoJsonLayer.eachLayer(layer => layers.push(layer));
             return layers;
@@ -1280,6 +1340,22 @@
                         radiusMeters: layer.getRadius()
                     }
                 };
+            }
+
+            if (layer instanceof L.Marker) {
+                const pointResult = layer.toGeoJSON();
+                const feature = pointResult.type === "Feature"
+                    ? pointResult
+                    : { type: "Feature", geometry: pointResult, properties: {} };
+
+                feature.properties = {
+                    ...(isObject(feature.properties) ? feature.properties : {}),
+                    zoneType: "POINT"
+                };
+                if (layer.feature && layer.feature.id !== undefined && feature.id === undefined) {
+                    feature.id = layer.feature.id;
+                }
+                return feature;
             }
 
             const result = layer.toGeoJSON();
@@ -1325,6 +1401,9 @@
                     String((feature.properties || {}).zoneType || "").toUpperCase() === "CIRCLE"
                 ) {
                     return "circle_created";
+                }
+                if (feature.geometry && feature.geometry.type === "Point") {
+                    return "point_created";
                 }
             }
             // Se conserva el nombre usado por la integración existente para polygon/rectangle.
@@ -1521,20 +1600,45 @@
             searchFromParent(event.data.query, event.data.requestId);
         });
 
+        // Agrupa los eventos del mismo movimiento (pm:dragend + dragend del marcador)
+        // para no enviar dos veces el mismo GeoJSON.
+        let geometryChangeTimer = null;
+
+        function handleGeometryChange() {
+            if (geometryChangeTimer) clearTimeout(geometryChangeTimer);
+            geometryChangeTimer = setTimeout(() => {
+                geometryChangeTimer = null;
+                enviarGeoJson();
+                refreshMetrics();
+            }, 120);
+        }
+
+        // Un punto se mueve arrastrándolo; no requiere entrar al modo de arrastre.
+        function enablePointDragging(layer) {
+            if (!(layer instanceof L.Marker)) return;
+
+            layer.options.draggable = true;
+            if (layer.dragging) {
+                layer.dragging.enable();
+            } else if (L.Handler && L.Handler.MarkerDrag) {
+                layer.dragging = new L.Handler.MarkerDrag(layer);
+                layer.dragging.enable();
+            }
+        }
+
         function attachLayerListeners(layerOrGroup) {
             const layers = [];
             collectLeafLayers(layerOrGroup, layers);
 
             layers.forEach(layer => {
                 if (layer.pm) layer.pm.enable();
-                layer.on("pm:edit", () => {
-                    enviarGeoJson();
-                    refreshMetrics();
-                });
-                layer.on("pm:dragend", () => {
-                    enviarGeoJson();
-                    refreshMetrics();
-                });
+                layer.on("pm:edit", handleGeometryChange);
+                layer.on("pm:dragend", handleGeometryChange);
+
+                if (layer instanceof L.Marker) {
+                    enablePointDragging(layer);
+                    layer.on("dragend", handleGeometryChange);
+                }
             });
         }
 
@@ -1557,10 +1661,16 @@
             const layer = event.layer;
             clearCurrentLayer();
             currentWasFeatureCollection = false;
-            currentLayer = layer;
+
+            // El punto dibujado con Geoman usa el icono por defecto; se cambia por el propio.
+            if (layer instanceof L.Marker) layer.setIcon(pointPinIcon);
 
             if (!map.hasLayer(layer)) layer.addTo(map);
-            attachLayerListeners(layer);
+            // Se envuelve en un grupo para que getBounds() funcione también con un punto,
+            // que por sí solo no implementa esa función.
+            currentLayer = L.featureGroup([layer]).addTo(map);
+
+            attachLayerListeners(currentLayer);
             enviarGeoJson();
             refreshMetrics();
         });
